@@ -29,6 +29,8 @@ bash deploy/start.sh
 
 生产配置单独使用 `compose.production.yaml`；不要与本地 `compose.yaml` 混用，以免误操作数据卷。默认生产项目名为 `atomforge-production`，应用、runner 和 HTTPS 代理均自动重启。
 
+若主机曾使用 `podman-docker`，安装 Docker Engine 后还应检查 `DOCKER_HOST` 是否仍指向 Podman socket。确认本机 Docker Engine 已启动后，在当前维护终端执行 `export DOCKER_HOST=unix:///var/run/docker.sock`，再运行上述脚本；保留原 Podman 数据和其他服务。
+
 Caddy 的证书自动签发/续期依赖正确解析、开放端口与持久化证书目录，见 [Caddy 官方说明](https://caddyserver.com/docs/automatic-https)。Compose 单机部署方式参见 [Docker 官方说明](https://docs.docker.com/compose/how-tos/production/)。
 
 ## 小内存服务器
