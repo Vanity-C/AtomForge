@@ -2,7 +2,28 @@
 
 本页记录实际执行的检查，不以功能清单替代测试结果。
 
-发布前检查进行中；测试数量、服务器健康和公网体验结果在验收后补齐。
+检查日期：2026-09-12。公开站点：https://newlifezh.top/。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 后端 `pytest app/backend/tests -q` | 59 passed；2 条依赖弃用提示，无失败 |
+| 前端 TypeScript / ESLint | 通过 |
+| 前端逻辑 `node --test scripts/test-*.mjs` | 17 passed |
+| runner 在 768 MB、无外网容器内测试 | 7 passed |
+| 本机构建 Linux x86_64 发布镜像 | app、runner 均成功；传输 SHA-256 一致 |
+| 服务器容器 | app、runner 健康；Caddy 提供 HTTPS |
+| TLS | 源站 Let's Encrypt 证书；Cloudflare 完全（严格） |
+| 公开路由 | 首页、工作台、个人中心、说明页均返回 200 |
+| 私有接口与配置 | 匿名项目接口 401，`.env.docker` 请求 404 |
+| 账号 | 新账号注册、用户名登录、邮箱登录均成功 |
+| 真实团队生成 | 五角色完成「今日清单」，2 份源码、v1 保存、19 步 QA 检查通过 |
+| 发布 | 独立应用及构建产物未登录可访问 |
+| 浏览器持久化 | 公网应用新增任务，刷新后任务及剩余计数保留 |
+| 数据备份 | SQLite online backup + 配套密钥，隔离恢复并执行 integrity_check 通过 |
+
+应用示例：https://newlifezh.top/apps/G0jOQjc79B0Dcax7 。这是该服务器上实际调用模型生成并发布的应用。
+
+服务器为 2 核 / 1 GB 内存，配置额外 2 GB swap，工作台生成并发为 1。本次生成完成后未见 app/runner OOM 或异常重启；这是一条实际流程验证，不是并发容量保证。
 
 ## 验证范围
 

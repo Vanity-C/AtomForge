@@ -9,10 +9,13 @@
 | 在线 Demo | https://newlifezh.top/ |
 | 开始体验 | https://newlifezh.top/dashboard |
 | 在线说明 | https://newlifezh.top/demo-guide.html |
+| 生成应用示例 | https://newlifezh.top/apps/G0jOQjc79B0Dcax7 |
 | GitHub 源码 | https://github.com/Vanity-C/AtomForge |
 | 发布版本 | https://github.com/Vanity-C/AtomForge/releases/tag/v0.1.0 |
 
-部署验收状态：准备发布，最终公网验收后更新本行。首页和说明公开可读；创建项目需要自助注册账号，用于隔离个人数据和生成记录。
+已部署至独立服务器，使用 Cloudflare 和 Caddy 提供 HTTPS，不依赖开发电脑保持运行。首页、说明和生成应用示例公开可读；创建项目需要自助注册账号，用于隔离个人数据和生成记录。
+
+当前评审实例为 2 核 / 1 GB 内存，额外配置 swap，工作台同时处理 1 个生成任务。适合个人体验，尚未做压力测试；繁忙时请稍后重试。在线生成使用真实模型额度。
 
 ## 产品目标
 
@@ -73,6 +76,10 @@ SQLite 数据卷      DeepSeek API       内部 runner 容器
 第一版不包含：任意 npm 包/服务端代码执行、每项目独立虚拟机、多机任务调度、多人实时合并、GitHub 双向同步、支付订阅/退款、自动广告投放。云服务在隔离浏览器中用测试替身，不把它当成真实支付或外部网络验收。
 
 ## 验证与工程质量
+
+v0.1.0 发布检查：后端 **59 项**、前端逻辑 **17 项**、runner **7 项**全部通过，TypeScript、lint 和 Docker 镜像构建通过。独立服务器已完成新账号注册、用户名/邮箱登录、团队真实生成、两份源码保存、v1 版本发布和匿名应用访问。「今日清单」通过团队 **19 步**交互验收；公网浏览器实际添加任务并刷新后，任务和剩余计数仍保留。数据库与配套密钥已备份，隔离恢复后的完整性检查通过。
+
+详细结果及边界见 [发布验证记录](https://github.com/Vanity-C/AtomForge/blob/main/docs/VALIDATION.md)。
 
 自动化检查覆盖账号与数据隔离、角色交接、必要确认、草稿恢复、精确补丁、模型格式与截断恢复、有限重试、版本冲突及真实浏览器执行。前端检查包括 TypeScript、lint、对话分组与状态逻辑；runner 使用 Chromium 实际编译和操作生成应用。
 
