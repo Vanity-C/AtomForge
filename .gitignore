@@ -32,3 +32,4 @@ dist/
 *.key
 *.p12
 *.pfx
+*-images.tar*
