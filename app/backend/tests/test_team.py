@@ -21,6 +21,9 @@ def fake_model(calls, reject=False, confirm=False):
     question={'kind':'user_requested','question':'用户要求先确认部署范围','options':[{'label':'自己使用','description':'当前用户使用'},{'label':'团队使用','description':'团队共享'}],'recommended':0,'reason':'用户明确要求先确认'}
     async def call(owner, project_id, run_id, model, stage, messages, **kwargs):
         context = json.loads(messages[-1]['content'])
+        if stage == 'team_leader':
+            if 'failure' in context:return {'summary':'Arrange repair','tasks':['Fix the reported issue']}
+            return {'goal':'counter','summary':'Coordinate counter delivery','stages':[{'role':role,'title':role,'tasks':['Implement counter scope'],'delivery':'verified output','gatekeeper':'qa' if role in {'engineer','qa'} else 'leader'} for role in ['product','design','architect','engineer','qa']]}
         calls.append((stage, context))
         if stage == 'team_product':
             return {'goal':'counter','tasks':['Build counter'],'acceptance':['increment works'],'questions':[question] if confirm else []}
@@ -60,7 +63,9 @@ def test_team_handoffs_and_independent_test_failure_repairs_before_commit(client
     assert 'Independent click failed' in calls[5][1]['previousError']
     assert checks[0]==[] and len(checks[1])==2 and len(checks)==4
     assert run['result']['team']['qa']['verified'] is True
-    assert set(run['result']['team'])=={'product','design','architect','engineer','qa'}
+    assert run['result']['team']['leader']['adjustments'][0]['items']==['Fix the reported issue']
+    assert calls[5][1]['leaderAdjustment']['items']==['Fix the reported issue']
+    assert set(run['result']['team'])=={'leader','product','design','architect','engineer','qa'}
     assert len(client.get(f'/api/v1/af/projects/{p}/versions',headers=owner).json()['items'])==1
     restored=client.get('/api/v1/studio/runs/'+run_id,headers=owner).json()
     assert restored['result']['team']==run['result']['team']
@@ -149,7 +154,7 @@ def test_exhausted_output_strategy_stops_without_three_identical_code_attempts(c
     run_id=client.post(f'/api/v1/studio/projects/{p}/runs',headers=owner,json={'instruction':'build','mode':'team','interactive':False}).json()['id']
     run=wait_run(client,owner,run_id)
     assert run['status']=='error' and attempts==['team_code']
-    assert set(run['result']['team'])=={'product','design','architect'}
+    assert set(run['result']['team'])=={'leader','product','design','architect'}
 
 
 @pytest.mark.parametrize('invalid',[

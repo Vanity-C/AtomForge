@@ -1,9 +1,9 @@
 import asyncio
 import json
 import secrets
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, func
 from core.database import db_manager
 from dependencies.af_auth import get_af_user
 from models.af_users import Af_users
@@ -282,9 +282,40 @@ async def share_artifact(slug:str):
 
 @router.get('/usage')
 async def usage(user:Af_users=Depends(get_af_user)):
+    from models.projects import Projects
     async with db_manager.session() as db:
-        rows=(await db.execute(select(StudioUsage).where(StudioUsage.owner==str(user.id)).order_by(StudioUsage.id.desc()).limit(500))).scalars().all()
-        return {'items':[{'model':r.model,'stage':r.stage,'project_id':r.project_id,'input_tokens':r.input_tokens,'output_tokens':r.output_tokens,'created':r.created} for r in rows], 'input_tokens':sum(r.input_tokens for r in rows),'output_tokens':sum(r.output_tokens for r in rows),'scope':'最近 500 次模型调用；金额以模型供应商账单为准'}
+        rows=(await db.execute(select(StudioUsage.project_id, Projects.name,
+            func.sum(StudioUsage.input_tokens), func.sum(StudioUsage.output_tokens),
+            func.count(StudioUsage.id), func.max(StudioUsage.created))
+            .outerjoin(Projects, Projects.id==StudioUsage.project_id)
+            .where(StudioUsage.owner==str(user.id)).group_by(StudioUsage.project_id, Projects.name)
+            .order_by(func.max(StudioUsage.id).desc()))).all()
+        projects=[{'project_id':p,'name':name or f'已删除项目 #{p}','deleted':name is None,
+                   'input_tokens':i,'output_tokens':o,'calls':count,'last_used':last}
+                  for p,name,i,o,count,last in rows]
+        return {'projects':projects,'input_tokens':sum(p['input_tokens'] for p in projects),
+                'output_tokens':sum(p['output_tokens'] for p in projects),
+                'scope':'当前账号全部项目调用记录；Codex tokens 不等同于账号额度百分比，DeepSeek 金额以供应商账单为准'}
+
+
+@router.get('/usage/projects/{project_id}')
+async def usage_details(project_id:int, before:int|None=Query(default=None,ge=1),
+                        limit:int=Query(default=50,ge=1,le=100), user:Af_users=Depends(get_af_user)):
+    from services.model_catalogue import provider_for
+    async with db_manager.session() as db:
+        query=select(StudioUsage).where(StudioUsage.owner==str(user.id),StudioUsage.project_id==project_id)
+        if before is not None: query=query.where(StudioUsage.id<before)
+        rows=(await db.execute(query.order_by(StudioUsage.id.desc()).limit(limit+1))).scalars().all()
+        page=rows[:limit]
+        return {'items':[{'id':r.id,'model':r.model,'provider':provider_for(r.model),'stage':r.stage,
+                 'run_id':r.run_id,'input_tokens':r.input_tokens,'output_tokens':r.output_tokens,'created':r.created}
+                 for r in page], 'next_cursor':page[-1].id if len(rows)>limit else None}
+
+
+@router.get('/models')
+async def models(user:Af_users=Depends(get_af_user)):
+    from services.model_catalogue import catalogue
+    return await catalogue()
 
 
 @router.get('/projects/{project_id}/export')

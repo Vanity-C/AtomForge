@@ -1,6 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {compile,check,visualEdit,MAX_TEST_STEPS} from './server.mjs';
+import {compile,check,visualEdit,MAX_TEST_STEPS,ready} from './server.mjs';
+test('readiness proves compilation and a working browser, including simultaneous probes',async()=>{
+  const results=await Promise.all([ready(),ready()]);
+  assert.deepEqual(results,[{status:'ready'},{status:'ready'}]);
+});
 test('long interaction suites preserve state and execute assertions beyond step twelve',async()=>{
   const artifact=await compile([{path:'App.jsx',content:`export default function App(){const [n,setN]=React.useState(0);return <button onClick={()=>setN(n+1)}>{n}</button>}`}]);
   const steps=Array.from({length:13},()=>({action:'click',selector:'button'}));

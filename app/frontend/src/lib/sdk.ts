@@ -232,6 +232,25 @@ export async function signOut(): Promise<void> {
   clearSession();
 }
 
+export interface OAuthTransfer {status:'confirmation_required';provider:string;login:string;target_name:string}
+const oauthExchanges=new Map<string,Promise<string|OAuthTransfer>>();
+export function completeOAuth(ticket:string):Promise<string|OAuthTransfer>{
+  const existing=oauthExchanges.get(ticket);if(existing)return existing;
+  const exchange=invoke<(AuthPayload&{redirect:string})|OAuthTransfer>({url:'/api/v1/af-auth/oauth/exchange',method:'POST',auth:!!readToken(),data:{ticket}}).then(payload=>{
+    if('status' in payload)return payload;
+    writeSession(payload.access_token,payload.user);
+    return payload.redirect.startsWith('/')&&!payload.redirect.startsWith('//')&&!payload.redirect.includes('\\')?payload.redirect:'/dashboard';
+  });
+  oauthExchanges.set(ticket,exchange);
+  return exchange;
+}
+
+export async function resolveOAuthTransfer(ticket:string,confirm:boolean):Promise<string>{
+  const result=await invoke<{redirect:string;transferred:boolean}>({url:'/api/v1/af-auth/oauth/transfer',method:'POST',data:{ticket,confirm}});
+  oauthExchanges.delete(ticket);
+  return result.redirect;
+}
+
 export async function updateAccount(input: {username: string; email: string; avatar?: string}): Promise<AfUser> {
   const payload = await invoke<{user: AfUser}>({url: '/api/v1/af-auth/me', method: 'PATCH', data: input});
   writeSession(readToken(), payload.user);

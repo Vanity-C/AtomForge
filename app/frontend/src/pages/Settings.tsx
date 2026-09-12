@@ -2,7 +2,9 @@
  * Generation settings: pick the provider/model used by the agent.
  */
 import { useEffect, useState } from 'react';
+import {Link} from 'react-router-dom';
 import UsagePanel from '@/components/UsagePanel';
+import { useRecoveringQuery } from '@/hooks/useRecoveringQuery';
 import { Check, Loader2, ShieldCheck, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -16,7 +18,7 @@ import { errorMessage } from '@/lib/sdk';
 import { loadProfile, saveProfile } from '@/lib/projectStore';
 import {
   DEFAULT_PROFILE,
-  MODEL_CATALOGUE,
+  type ModelCatalogue,
   type GenerationProfile,
 } from '@/lib/agent/modelProvider';
 
@@ -25,6 +27,7 @@ export default function Settings() {
   const [profile, setProfile] = useState<GenerationProfile>(DEFAULT_PROFILE);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const catalogue = useRecoveringQuery<ModelCatalogue>('/api/v1/studio/models');
 
   // The profile belongs to the signed-in AtomForge account.
   useEffect(() => {
@@ -80,8 +83,9 @@ export default function Settings() {
       ) : (
         <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6">
           <h1 className="text-2xl font-bold tracking-tight">生成设置</h1>
+          <Link to="/agents" className="mt-3 inline-block text-sm text-primary hover:underline">管理智能体 · 定制头像、性格与职责 →</Link>
           <p className="mt-2 text-sm text-muted-foreground">
-            选择生成应用时使用的 DeepSeek 模型。你的设置会自动随账号保存，密钥只保存在服务端。
+            选择 DeepSeek 或 GPT 模型。DeepSeek 使用已配置的 API Key，GPT 使用本机已登录的 Codex 账号额度。
           </p>
 
           <div className="mt-6 flex items-start gap-2.5 rounded-lg border border-border bg-card px-4 py-3">
@@ -95,6 +99,9 @@ export default function Settings() {
           <section className="mt-8">
             <h2 className="text-base font-semibold">生成模型</h2>
             <p className="mt-1 text-sm text-muted-foreground">选择用于代码生成的文本模型。</p>
+            <Button variant="ghost" size="sm" disabled={catalogue.refreshing} onClick={() => void catalogue.refresh()}>{catalogue.refreshing ? '正在检测模型…' : '刷新可用模型'}</Button>
+            {catalogue.waiting && <p role="status" className="text-sm text-muted-foreground">模型列表暂未同步，请稍后刷新。</p>}
+            {catalogue.data?.providers.map(provider => <p key={provider.id} className="mt-2 text-xs text-muted-foreground">{provider.label}：{provider.error || '已连接'}</p>)}
 
             {loading ? (
               <div className="mt-4 space-y-3">
@@ -104,14 +111,16 @@ export default function Settings() {
               </div>
             ) : (
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                {MODEL_CATALOGUE.map((model) => {
+                {catalogue.data?.items.map((model) => {
                   const selected = model.id === profile.model;
                   return (
                     <button
                       key={model.id}
                       type="button"
+                      disabled={model.available === false}
+                      aria-pressed={selected}
                       onClick={() => setProfile((p) => ({ ...p, model: model.id, provider: model.provider }))}
-                      className={`rounded-lg border p-4 text-left transition-colors duration-200 ease-out-quart ${
+                      className={`rounded-lg border p-4 text-left transition-colors duration-200 ease-out-quart disabled:opacity-50 ${
                         selected
                           ? 'border-primary bg-accent/60'
                           : 'border-border bg-card hover:md:border-primary/40'
@@ -156,9 +165,10 @@ export default function Settings() {
                 <span className="tnum text-sm text-muted-foreground">{profile.temperaturePct}</span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                数值越低越稳定保守，越高越有创意但可能出错。
+                {profile.provider === 'codex' ? 'GPT 使用 Codex 模型的默认推理设置，创造性滑块仅适用于 DeepSeek。' : '数值越低越稳定保守，越高越有创意但可能出错。'}
               </p>
               <Slider
+                disabled={profile.provider === 'codex'}
                 value={[profile.temperaturePct]}
                 min={0}
                 max={100}

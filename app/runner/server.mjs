@@ -117,6 +117,7 @@ export async function compile(files) {
 }
 
 export const MAX_TEST_STEPS = 48;
+export class RunnerEnvironmentError extends Error {}
 export async function check(artifact, steps=[]) {
   if (!Array.isArray(steps)) throw Error('测试协议错误：tests 必须是步骤数组');
   if (steps.length > MAX_TEST_STEPS) throw Error(`测试协议错误：提交了 ${steps.length} 步，单次最多支持 ${MAX_TEST_STEPS} 步。请精简重复测试，保留核心流程；此错误不代表应用代码有问题。`);
@@ -127,7 +128,9 @@ export async function check(artifact, steps=[]) {
       throw Error(`测试协议错误：第 ${index+1} 步需要有效的 action、CSS selector（最多 300 字符），fill/text 还需要字符串 value；请修正测试步骤。`);
     }
   }
-  const browser=await chromium.launch({headless:true,args:['--disable-dev-shm-usage','--no-sandbox','--js-flags=--max-old-space-size=128']});
+  let browser;
+  try { browser=await chromium.launch({headless:true,args:['--disable-dev-shm-usage','--no-sandbox','--js-flags=--max-old-space-size=128']}); }
+  catch(error) { throw new RunnerEnvironmentError('验证浏览器无法启动：'+String(error.message).slice(0,1500)); }
   let timedOut = false;
   const deadline=setTimeout(()=>{timedOut=true;void browser.close();},60000);
   const logs=[]; const errors=[];
@@ -189,9 +192,26 @@ export async function check(artifact, steps=[]) {
 }
 
 let active=false;
+let readyAt=0;
+let readiness;
+export async function ready() {
+  if(Date.now()-readyAt<15000)return {status:'ready'};
+  if(!readiness)readiness=(async()=>{
+    const artifact=await compile([{path:'App.jsx',content:'export default function App(){return <h1>runner-ready</h1>}'}]);
+    const result=await check(artifact,[{action:'text',selector:'h1',value:'runner-ready'}]);
+    if(!result.ok)throw new RunnerEnvironmentError(result.error);
+    readyAt=Date.now();
+    return {status:'ready'};
+  })().finally(()=>{readiness=undefined;});
+  return readiness;
+}
 const server=http.createServer(async(req,res)=>{
   const reply=(code,data)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(data));};
   if(req.url==='/health') return reply(200,{status:'healthy',packages:PACKAGES});
+  if(req.url==='/ready') {
+    try {return reply(200,await ready());}
+    catch(error) {console.error('Runner readiness:',error.message);return reply(503,{code:'runner_unavailable',error:'构建或验证浏览器未就绪'});}
+  }
   if(req.url!=='/build' || req.method!=='POST') return reply(404,{error:'Not found'});
   if(active) return reply(429,{error:'构建服务忙，请稍后重试'});
   active=true;
@@ -203,7 +223,7 @@ const server=http.createServer(async(req,res)=>{
     const artifact=await compile(files);
     const result=input.check===false ? {ok:true,logs:['构建通过；未执行浏览器检查']} : await check(artifact,input.tests||[]);
     reply(200,{...result,artifact:result.ok?artifact:null,...(input.edit?{files}: {})});
-  } catch(e){reply(200,{ok:false,error:String(e.message).slice(0,5000),logs:[]});}
+  } catch(e){if(e instanceof RunnerEnvironmentError){readyAt=0;console.error(e.message);reply(503,{code:'runner_unavailable',error:'验证浏览器暂不可用'});}else reply(200,{ok:false,error:String(e.message).slice(0,5000),logs:[]});}
   finally {active=false;}
 });
 if(process.argv[1]===fileURLToPath(import.meta.url)) server.listen(Number(process.env.PORT||8001),'0.0.0.0');

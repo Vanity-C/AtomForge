@@ -78,6 +78,8 @@ async def lifespan(app: FastAPI):
         await initialize_database()
         from services.studio import recover
         await recover()
+        from services.delivery import recover as recover_delivery
+        await recover_delivery()
     # MODULE_STARTUP_END
         pass
 
@@ -85,6 +87,8 @@ async def lifespan(app: FastAPI):
     yield
     from services.checkpoints import shutdown
     await shutdown()
+    from services.delivery import shutdown as shutdown_delivery
+    await shutdown_delivery()
     if not get_env_bool("MGX_IGNORE_MODULE_INIT", default=True):
         # MODULE_SHUTDOWN_START
         await close_database()
@@ -140,7 +144,7 @@ def include_routers_from_package(app: FastAPI, package_name: str = "routers") ->
             continue
         # Only expose the features used by this self-hosted Demo. Legacy cloud
         # entity/AI/storage/admin endpoints are not part of its public API.
-        if module_name.rsplit(".", 1)[-1] not in {"af_auth", "af_projects", "af_generation", "share", "health", "studio", "cloud", "connections", "reports"}:
+        if module_name.rsplit(".", 1)[-1] not in {"af_auth", "af_projects", "af_generation", "share", "health", "studio", "cloud", "connections", "reports", "agent_profiles", "oauth", "delivery"}:
             continue
         try:
             module = importlib.import_module(module_name)

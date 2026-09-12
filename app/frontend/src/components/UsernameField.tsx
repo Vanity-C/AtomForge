@@ -6,7 +6,7 @@ import {errorMessage, invoke, readToken} from '@/lib/sdk';
 
 export const USERNAME_HELP = '2–40 位中文、英文字母、数字、下划线、点或短横线；不区分英文大小写。';
 
-export default function UsernameField({value, onChange, disabled = false}: {value: string; onChange: (value: string) => void; disabled?: boolean}) {
+export default function UsernameField({value, onChange, disabled = false,compact=false}: {value: string; onChange: (value: string) => void; disabled?: boolean;compact?:boolean}) {
   const [check, setCheck] = useState<{value: string; state: 'checking' | 'available' | 'error'; message: string} | null>(null);
   useEffect(() => {
     if (!value.trim()) return;
@@ -27,7 +27,7 @@ export default function UsernameField({value, onChange, disabled = false}: {valu
     <Label htmlFor="account-username">用户名</Label>
     <Input id="account-username" value={value} onChange={e => onChange(e.target.value)} placeholder="设置你的唯一用户名" autoComplete="username" maxLength={40} disabled={disabled} aria-describedby="username-help username-status" aria-invalid={current?.state === 'error'} required/>
     <p id="username-help" className="text-xs leading-5 text-muted-foreground">{USERNAME_HELP}</p>
-    <p id="username-status" role="status" className={`flex min-h-5 items-center gap-1 text-xs ${current?.state === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}>
+    <p id="username-status" role="status" className={`flex ${compact&&!current?'':'min-h-5'} items-center gap-1 text-xs ${current?.state === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}>
       {current?.state === 'checking' && <Loader2 className="h-3 w-3 animate-spin"/>}
       {current?.state === 'available' && <CheckCircle2 className="h-3 w-3 text-emerald-600"/>}
       {current?.message}

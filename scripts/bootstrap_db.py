@@ -22,7 +22,7 @@ async def initialize_database():
                 print("Created database using the current ORM schema.")
             else:
                 print("Checking additive schema upgrades; existing user data is preserved.")
-                additions = [table for table in Base.metadata.sorted_tables if table.name.startswith('studio_')]
+                additions = [table for table in Base.metadata.sorted_tables if table.name.startswith('studio_') or table.name in {'af_external_identities','af_oauth_flows','af_deliveries'}]
                 missing = [t for t in additions if t.name not in tables]
                 account_upgrade = False
                 project_upgrade = False

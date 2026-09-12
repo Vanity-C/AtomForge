@@ -121,7 +121,7 @@ function ProjectWorkspace() {
   const [run, setRun] = useState<StudioRun | null>(null);
   const [runId, setRunId] = useState('');
   const [runRefresh,setRunRefresh] = useState(0);
-  const [chatRole,setChatRole] = useState('all');
+  const [chatRole,setChatRole] = useState('leader');
   const [race, setRace] = useState(false);
   const agentMode: AgentMode = project?.agent_mode || 'build';
   const [artifact, setArtifact] = useState<Artifact>();
@@ -291,11 +291,11 @@ function ProjectWorkspace() {
 
   /* ------------------------------------------------------------ edit files */
 
-  const activeFile = displayFiles.find((f) => f.path === activePath) ?? displayFiles[0];
+  const activeFile = activePath ? displayFiles.find((f) => f.path === activePath) ?? displayFiles[0] : undefined;
   const dirty = draft !== null && activeFile ? draft !== activeFile.content : false;
 
   const handleSaveFile = async () => {
-    if (!activeFile || draft === null || !dirty || showingDraft || generating || !canEdit) return;
+    if (!activeFile || draft === null || !dirty || savingFile || showingDraft || generating || !canEdit) return;
     setSavingFile(true);
     try {
       const next = files.map((f) => (f.path === activeFile.path ? { ...f, content: draft } : f));
@@ -695,7 +695,7 @@ function ProjectWorkspace() {
 
             <RunNotice run={run} onOpenBoard={()=>{setRightTab('board');if(run?.status==='awaiting_input')setChatRole('all');}}/>
             {runConnectionWaiting&&<p role="status" className="shrink-0 border-b px-3 py-2 text-xs text-muted-foreground">进度连接暂时中断，正在自动恢复；请勿重复提交需求。</p>}
-            <AgentConversation filePaths={displayFiles.map(file=>file.path)} onOpenFile={path=>{if(path!==activeFile?.path&&dirty){toast.info("请先保存或放弃当前文件的修改，再查看其他文件");setRightTab("code");return;}if(path!==activeFile?.path)setDraft(null);setActivePath(path);setRightTab("code");}} projectId={projectId} run={run} role={chatRole} onRole={setChatRole} team={agentMode==='team'} model={profile.model} canEdit={canEdit} legacy={bubbles} onUpdated={()=>setRunRefresh(n=>n+1)} onImplement={text=>{setChatRole('all');setInput(text);}}/>
+            <AgentConversation filePaths={displayFiles.map(file=>file.path)} onOpenFile={path=>{if(path!==activeFile?.path&&dirty){toast.info("请先保存或放弃当前文件的修改，再查看其他文件");setRightTab("code");return;}if(path!==activeFile?.path)setDraft(null);setActivePath(path);setRightTab("code");}} projectId={projectId} run={run} role={chatRole} onRole={setChatRole} team={agentMode==='team'} model={profile.model} canEdit={canEdit} legacy={bubbles} onScheduled={id=>{setRunId(id);setRunRefresh(n=>n+1);}} onUpdated={()=>setRunRefresh(n=>n+1)} onImplement={text=>{setChatRole('all');setInput(text);}}/>
 
             <div className={`shrink-0 border-t border-border p-3 ${chatRole!=='all'?'hidden':''}`}>
               {previewError && !generating ? <div className="mb-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-xs">
@@ -772,6 +772,7 @@ function ProjectWorkspace() {
                       files={displayFiles}
                       activePath={activeFile?.path ?? ''}
                       onSelect={(path) => {
+                        if (path === activeFile?.path || savingFile) return;
                         if(path!==activeFile?.path&&dirty){toast.info('请先保存或放弃当前文件的修改');return;}
                         setActivePath(path);
                         setDraft(null);
@@ -783,6 +784,7 @@ function ProjectWorkspace() {
                       saving={savingFile}
                       onDraftChange={setDraft}
                       onSave={handleSaveFile}
+                      onDiscard={() => setDraft(null)}
                     />
                   )}
                   </div>

@@ -55,15 +55,15 @@ def test_checkpoints_block_work_survive_restart_and_apply_revision(client,monkey
             assert context['userDecisions'][0]['feedback']=='Use a blue card'
     messages=client.get(f'/api/v1/studio/projects/{p}/conversations',headers=owner).json()['items']
     handoffs=[m for m in messages if m['kind']=='handoff']
-    assert any(m['sender']=='product' and m['recipient']=='design' for m in handoffs)
-    assert any(m['sender']=='engineer' and m['recipient']=='qa' for m in handoffs)
+    assert any(m['sender']=='leader' and m['recipient']=='design' for m in handoffs)
+    assert any(m['sender']=='leader' and m['recipient']=='qa' for m in handoffs)
     starts=[m for m in messages if m['kind']=='tool_start']
     results=[m for m in messages if m['kind']=='tool_result']
     assert any(m['detail']['tool']=='runner.build_and_test' for m in starts)
     assert all(any(result['detail'].get('call_id')==start['detail']['call_id'] for result in results) for start in starts)
     designer=client.get(f'/api/v1/studio/projects/{p}/conversations?role=design',headers=owner).json()['items']
     assert all(m['sender']=='design' or m['recipient']=='design' for m in designer)
-    assert any(m['sender']=='product' for m in designer)
+    assert any(m['sender']=='leader' for m in designer)
     # A new edit must inherit the user's earlier decisions, not ask them again.
     next_calls=[]
     monkeypatch.setattr(studio,'model_call',fake_model(next_calls))

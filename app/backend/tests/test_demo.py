@@ -16,6 +16,7 @@ os.environ["ATOMFORGE_JWT_SECRET"] = "test-only-signing-key-for-isolated-databas
 
 @pytest.fixture(scope="module")
 def client(tmp_path_factory):
+    from unittest.mock import AsyncMock, patch
     from core.config import settings
     from core.database import Base, db_manager
     import models
@@ -31,7 +32,12 @@ def client(tmp_path_factory):
             await conn.run_sync(Base.metadata.create_all)
         await db_manager.close_db()
     asyncio.run(init())
-    with TestClient(app) as c:
+    # Each TestClient owns a new event loop, so contended asyncio locks must
+    # belong to that lifecycle rather than the previous module's closed loop.
+    with patch('services.studio.start_lock', new=asyncio.Lock()), \
+         patch('services.studio.event_lock', new=asyncio.Lock()), \
+         patch('services.studio.build_lock', new=asyncio.Lock()), \
+         patch('services.studio.ensure_runner_ready', new=AsyncMock()), TestClient(app) as c:
         # Each module owns a fresh database and independent request quota.
         middleware=app.middleware_stack
         while middleware:

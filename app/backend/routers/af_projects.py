@@ -69,8 +69,8 @@ class AddMessageRequest(BaseModel):
 
 
 class SettingsRequest(BaseModel):
-    provider: Literal["deepseek"] = "deepseek"
-    model: Literal["deepseek-flash", "deepseek-v4-pro"] = "deepseek-flash"
+    provider: Literal["deepseek", "codex"] = "deepseek"
+    model: str = Field(default="deepseek-flash", min_length=1, max_length=80)
     temperature_pct: int = Field(default=35, ge=0, le=100)
     auto_preview: bool = True
 

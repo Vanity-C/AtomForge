@@ -2,6 +2,7 @@ import {useState} from 'react';
 import MembersPanel from './MembersPanel';
 import ConnectionsPanel from './ConnectionsPanel';
 import ReportsPanel from './ReportsPanel';
+import DeliveryPanel from './DeliveryPanel';
 import {toast} from 'sonner';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
@@ -29,9 +30,11 @@ export default function ProjectTools({projectId,onChanged,disabled,role='owner'}
     }catch(e){toast.error(errorMessage(e));}
   };
   const perform=async(task:()=>Promise<void>)=>{setBusy(true);try{await task();onChanged();}catch(e){toast.error(errorMessage(e));}finally{setBusy(false);}};
-  return <Sheet onOpenChange={open=>{if(open)void load();}}><SheetTrigger asChild><Button variant="outline" size="sm" disabled={disabled}>云服务与发布</Button></SheetTrigger>
-    <SheetContent className="overflow-y-auto"><SheetHeader><SheetTitle>应用服务与发布</SheetTitle><SheetDescription>为生成的应用配置独立用户、数据和发布版本。</SheetDescription></SheetHeader>
+  return <Sheet defaultOpen={new URLSearchParams(window.location.search).has('delivery')} onOpenChange={open=>{if(open)void load();}}><SheetTrigger asChild><Button variant="outline" size="sm" disabled={disabled}>发布与部署</Button></SheetTrigger>
+    <SheetContent className="w-full overflow-y-auto sm:max-w-2xl"><SheetHeader><SheetTitle>发布与部署</SheetTitle><SheetDescription>把源码交付到 GitHub／Gitee，把应用部署到公网。</SheetDescription></SheetHeader>
       <div className="mt-5 space-y-5">
+        {canManage&&<DeliveryPanel projectId={projectId}/>}
+        <details className="rounded-xl border p-4"><summary className="cursor-pointer text-sm font-semibold">应用云服务、构建与站内快照</summary><div className="mt-5 space-y-5">
         {!canManage&&<p className="text-xs text-muted-foreground">当前为协作{role==='editor'?'编辑者':'查看者'}。发布与服务配置由项目所有者管理。</p>}
         <div className="flex justify-between"><Label>开启应用云服务</Label><Switch disabled={!canManage} checked={cloud.enabled} onCheckedChange={enabled=>setCloud({...cloud,enabled})}/></div>
         <p className="text-xs text-muted-foreground">应用用户需单独注册，与工作台账号独立。private 集合仅本人读写；shared 集合所有已登录的应用用户均可读写。</p>
@@ -48,13 +51,14 @@ export default function ProjectTools({projectId,onChanged,disabled,role='owner'}
           <Button variant="outline" disabled={busy} onClick={()=>void perform(async()=>{const r=await invoke<{logs:string[]}>({url:studioUrl(projectId,'build'),method:'POST',timeoutMs:90000});setLogs(r.logs.join('\n'));toast.success('构建检查通过');})}>{busy?'处理中…':'构建当前版本'}</Button>
           {logs&&<pre className="mt-2 whitespace-pre-wrap text-xs">{logs}</pre>}
         </div>
-        <div className="border-t pt-4"><h3 className="font-semibold">发布独立应用</h3><p className="my-2 text-xs text-muted-foreground">发布保存当前构建快照，后续编辑不影响已发布版本。回滚项目后重新构建并发布，可恢复旧功能。</p>
+        <div className="border-t pt-4"><h3 className="font-semibold">站内应用快照</h3><p className="my-2 text-xs text-muted-foreground">保存站内构建快照，后续编辑不影响它。本地地址仅能在当前电脑访问；需要公网链接时，请使用上方 Netlify 部署。</p>
           <Button disabled={busy||!canManage} onClick={()=>void perform(async()=>{const r=await invoke<Release>({url:studioUrl(projectId,'release'),method:'POST'});setRelease({...r,active:true});toast.success('发布成功');})}>发布当前版本</Button>
           {release?.active&&<div className="mt-3 space-y-2"><p className="text-xs">已发布 v{release.version}</p><Input readOnly value={window.location.origin+'/apps/'+release.slug}/><a className="block text-sm text-primary underline" target="_blank" rel="noreferrer" href={'/apps/'+release.slug}>打开应用</a><Button variant="outline" disabled={busy} onClick={()=>void perform(async()=>{await invoke({url:studioUrl(projectId,'release'),method:'DELETE'});await load();})}>下线应用</Button></div>}
         </div>
         <MembersPanel projectId={projectId}/>
         <ConnectionsPanel projectId={projectId}/>
         <ReportsPanel projectId={projectId}/>
+        </div></details>
       </div>
     </SheetContent>
   </Sheet>;

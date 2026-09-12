@@ -1,3 +1,4 @@
+import StudioSelect from '@/components/StudioSelect';
 /**
  * Sandboxed preview of a generated multi-file React app.
  *
@@ -356,7 +357,7 @@ export default function PreviewFrame({ files, className, storageKey, onStatusCha
           <span className="tnum text-muted-foreground">{runnable.length?runnable.length+' 个文件':'已构建应用'}</span>
         </div>
         <div className="flex gap-1">
-        <select aria-label="预览设备" className="max-w-20 rounded border bg-background text-xs" value={device} onChange={e=>setDevice(e.target.value)}><option value="desktop">桌面</option><option value="tablet">平板</option><option value="mobile">手机</option></select>
+        <StudioSelect aria-label="预览设备" compact className="max-w-24" value={device} onValueChange={setDevice} options={[{value:"desktop",label:"桌面"},{value:"tablet",label:"平板"},{value:"mobile",label:"手机"}]}/>
         {onElementSelect&&artifact&&<Button size="sm" variant={editMode?'default':'outline'} className="h-7 px-2 text-xs" onClick={()=>{const next=!editMode;setEditMode(next);frameRef.current?.contentWindow?.postMessage({source:'atomforge-edit-mode',channel:document.channel,enabled:next},'*');}}>{editMode?'退出选取':'选取元素'}</Button>}
         <Button
           size="sm"

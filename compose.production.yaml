@@ -2,7 +2,7 @@ name: atomforge-production
 
 services:
   app:
-    image: atomforge:${ATOMFORGE_VERSION:-0.1.0}
+    image: atomforge:${ATOMFORGE_VERSION:-0.2.0}
     build:
       context: .
       dockerfile: Dockerfile
@@ -36,7 +36,7 @@ services:
       options: {max-size: 10m, max-file: "3"}
 
   runner:
-    image: atomforge-runner:${ATOMFORGE_VERSION:-0.1.0}
+    image: atomforge-runner:${ATOMFORGE_VERSION:-0.2.0}
     build:
       context: .
       dockerfile: app/runner/Dockerfile
@@ -49,9 +49,9 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:8001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
-      timeout: 5s
+      timeout: 12s
       start_period: 20s
       retries: 3
     logging:

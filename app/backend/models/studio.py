@@ -11,6 +11,13 @@ class StudioSequence(Base):
     value: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class StudioAgentSettings(Base):
+    __tablename__ = 'studio_agent_settings'
+    owner: Mapped[str] = mapped_column(String, primary_key=True)
+    content: Mapped[str] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+
+
 class StudioRun(Base):
     __tablename__ = 'studio_runs'
     id: Mapped[str] = mapped_column(String, primary_key=True)

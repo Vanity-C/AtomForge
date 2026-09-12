@@ -17,6 +17,9 @@ from models.studio import StudioRun, StudioArtifact, StudioUsage, StudioConversa
 from services.af_projects import AfProjectService
 from services.aihub import AIHubService
 from services.generation import MODELS, active_run_limit
+from services.model_catalogue import validate_model, provider_for
+from services import codex_provider
+from services.leadership import Replan
 
 PATH = re.compile(r'^(?!.*(?:\.\.|\\))[a-zA-Z0-9_][a-zA-Z0-9_./-]*\.(?:jsx?|tsx?|css|json)$')
 ACTIVE = {'queued','running'}
@@ -25,7 +28,7 @@ start_lock = asyncio.Lock()
 build_lock = asyncio.Lock()
 event_lock = asyncio.Lock()
 
-ENGINEER = '''你是应用工程师尼奥（Neo），是 AtomForge 的开发伙伴。使用 React 18 生成可运行应用。返回 JSON 对象：
+ENGINEER = '''你是应用工程师，是 AtomForge 的开发伙伴。使用 React 18 生成可运行应用。返回 JSON 对象：
 {"summary":"中文变更摘要","files":[{"path":"App.jsx","content":"完整文件内容"}],"delete":[],"tests":[{"action":"visible|click|fill|text","selector":"CSS 选择器","value":"可选输入或期望文字"}]}
 只返回新增或修改的文件，未提及文件会原样保留。删除文件必须在 delete 中明确列出。禁止省略代码。
 修改已有代码优先使用精确局部补丁，避免为小改动输出整个大文件：{"summary":"摘要","files":[],"edits":[{"path":"App.jsx","old":"从 currentFiles 原样复制的唯一代码片段","new":"完整替换片段"}],"delete":[],"tests":[]}。old 必须非空且在该文件中恰好出现一次，包含足够上下文；同一文件可有多个 edits，按顺序应用，最多60项。同一文件不能同时出现在 files 和 edits 中。新增文件仍在 files 中提供完整内容；不要将未修改的 CSS 或组件再次输出，不要为了缩短代码删除原有功能。
@@ -95,18 +98,40 @@ async def retry_transient(operation, on_retry):
             await asyncio.sleep(attempt+1)
 
 
+class RunnerUnavailable(HTTPException):
+    def __init__(self):
+        super().__init__(503, '验证服务尚未就绪，已保留代码和进度。服务恢复后可继续验收，无需重新描述需求。')
+
+
+async def ensure_runner_ready():
+    """Check the compiler and an actual browser before spending model tokens."""
+    async with httpx.AsyncClient(timeout=12, trust_env=False) as client:
+        try:
+            response = await client.get(os.getenv('RUNNER_URL','http://127.0.0.1:8001')+'/ready')
+            response.raise_for_status()
+            if response.json().get('status') != 'ready': raise RunnerUnavailable()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise RunnerUnavailable() from exc
+
+
 async def runner_build(files, tests=None, edit=None):
     async with build_lock, httpx.AsyncClient(timeout=75,trust_env=False) as client:
         try:
             r=await client.post(os.getenv('RUNNER_URL','http://127.0.0.1:8001')+'/build',json={'files':files,'tests':tests or [],'edit':edit})
-            if r.status_code==429: raise HTTPException(429,'构建服务忙，请稍后重试')
+            if r.status_code==429: raise HTTPException(429,'验证队列繁忙，正在等待空闲')
             r.raise_for_status()
             return r.json()
-        except httpx.HTTPError as e:
-            raise HTTPException(503,'构建服务不可用，请启动 Docker Compose runner 服务') from e
+        except (httpx.HTTPError, ValueError) as e:
+            raise RunnerUnavailable() from e
+
+
+def can_resume_verification(result, error):
+    return bool(result.get('draft_files') and (result.get('error_code') == 'runner_unavailable'
+        or '构建服务不可用' in error or '验证服务尚未就绪' in error))
 
 
 async def get_run(owner, run_id):
+    from services.agent_profiles import legacy_team
     async with db_manager.session() as db:
         r=await db.get(StudioRun,run_id)
         if not r or r.owner!=str(owner): raise HTTPException(404,'任务不存在')
@@ -114,7 +139,7 @@ async def get_run(owner, run_id):
         if result.get('pending'):
             from services.checkpoints import normalize
             result['pending'] = normalize(result['pending'])
-        return {'id':r.id,'project_id':r.project_id,'mode':json.loads(r.payload).get('mode','build'),'status':r.status,'stage':r.stage,'events':json.loads(r.events),'result':result,'error':r.error,'created':r.created,'server_time':time.time()}
+        return {'id':r.id,'project_id':r.project_id,'mode':json.loads(r.payload).get('mode','build'),'agents':json.loads(r.payload).get('agents') or legacy_team(),'status':r.status,'stage':r.stage,'events':json.loads(r.events),'result':result,'error':r.error,'created':r.created,'server_time':time.time()}
 
 
 async def change(run_id, **values):
@@ -149,20 +174,38 @@ def parse_model_json(text):
     return value
 
 
-async def model_call(owner,project_id,run_id,model,stage,messages,max_tokens=12000,temperature=.25):
+async def model_call(owner,project_id,run_id,model,stage,messages,max_tokens=12000,temperature=.25,agent_team=None):
     from services.budget import check_budget
     await check_budget(owner)
-    service=AIHubService()
+    from services.agent_profiles import snapshot, prompt_for, ROLE_IDS
+    role=stage.removeprefix('team_').removeprefix('chat_')
+    if role=='plan':role='leader'
+    if role not in ROLE_IDS:role='engineer'
+    messages=[dict(m) for m in messages]
+    if stage in {'plan','code','repair'} or stage.startswith(('team_','chat_')):
+        if agent_team is None:
+            async with db_manager.session() as db:
+                run=await db.get(StudioRun,run_id) if run_id else None
+                agent_team=json.loads(run.payload).get('agents') if run and run.owner==str(owner) else None
+                if not agent_team:agent_team=await snapshot(owner,db)
+        persona=prompt_for(role,agent_team)
+        if messages and messages[0].get('role')=='system':messages[0]['content']+=persona
+        else:messages.insert(0,{'role':'system','content':persona})
+    is_codex = provider_for(model) == 'codex'
+    service=None if is_codex else AIHubService()
     try:
-        client=service._require_ai_client()
+        client=service._require_ai_client() if service else None
         current_messages = list(messages)
         for format_attempt in range(2):
             async def request():
                 await check_budget(owner)
                 async with asyncio.timeout(180):
+                    if is_codex:
+                        return await codex_provider.complete(model, current_messages)
                     return await client.chat.completions.create(model=model,messages=current_messages,max_tokens=max_tokens,temperature=temperature if not format_attempt else .1,extra_body={'thinking':{'type':'disabled'}},response_format={'type':'json_object'})
-            role=stage.removeprefix('team_')
-            if role in {'code','repair','plan'}: role='engineer'
+            role=stage.removeprefix('team_').removeprefix('chat_')
+            if role=='plan':role='leader'
+            if role in {'code','repair'}: role='engineer'
             response=await retry_transient(request,lambda attempt:event(run_id,'recovering',f'模型连接暂时不稳定，正在重试当前步骤（{attempt}/2），无需重新提交需求。',role=role,kind='activity',state='recovering'))
             usage=response.usage
             async with db_manager.session() as db:
@@ -183,7 +226,7 @@ async def model_call(owner,project_id,run_id,model,stage,messages,max_tokens=120
                 current_messages = [*messages, {'role':'assistant','content':text}, {'role':'user','content':'上一条不是有效的单个 JSON 对象。请保留所有所需字段和完整代码，修正为一个严格合法的 JSON 对象。不要 Markdown 围栏、解释或多个并列 JSON；文件放在同一个 files 数组内。'}]
 
     finally:
-        if service.client: await service.client.close()
+        if service and service.client: await service.client.close()
 
 
 async def traced_tool(run_id, role, tool, inputs, operation, summarize):
@@ -201,20 +244,25 @@ async def traced_tool(run_id, role, tool, inputs, operation, summarize):
 
 
 async def call_model(owner,project_id,run_id,model,stage,messages,max_tokens=12000,temperature=.25):
+    from services.leadership import apply_feedback
+    await apply_feedback(run_id)
     role=stage.removeprefix('team_')
-    if role in {'code','repair','plan'}: role='engineer'
+    if role in {'code','repair'}: role='engineer'
+    if role=='plan':role='leader'
     return await traced_tool(run_id,role,'model.generate',{'model':model,'stage':stage},
         lambda:model_call(owner,project_id,run_id,model,stage,messages,max_tokens=max_tokens,temperature=temperature),
         lambda r:{'summary':r.get('summary',r.get('goal','模型已返回结构化产出')),'files':patch_paths(r)})
 
 
 async def checked_build(run_id, files, tests=None, role='qa'):
+    from services.leadership import apply_feedback
+    await apply_feedback(run_id)
     return await traced_tool(run_id,role,'runner.build_and_test',{'files':[f['path'] for f in files],'tests':tests or []},
-        lambda:retry_transient(lambda:runner_build(files,tests),lambda attempt:event(run_id,'recovering',f'验证服务暂时繁忙，正在重试验证（{attempt}/2），已生成的代码不会丢失。',role=role,kind='activity',state='recovering')),lambda r:{'ok':r.get('ok'),'logs':r.get('logs',[]),'error':r.get('error','')})
+        lambda:retry_transient(lambda:runner_build(files,tests),lambda attempt:event(run_id,'recovering',f'验证连接暂未完成，正在重新连接（{attempt}/2）。代码已保存，不会重新生成。',role=role,kind='activity',state='recovering')),lambda r:{'ok':r.get('ok'),'logs':r.get('logs',[]),'error':r.get('error','')})
 
 
 async def start(owner, project_id, instruction, model, mode=None,temperature=.35,interactive=True, retry_of=None):
-    if model not in MODELS: raise HTTPException(400,'不支持的模型')
+    await validate_model(model)
     if mode is not None and mode not in {'build','race','team'}: raise HTTPException(400,'未知运行模式')
     async with start_lock, db_manager.session() as db:
         service=AfProjectService(db,str(owner)); project=await service.get_project(project_id)
@@ -229,18 +277,25 @@ async def start(owner, project_id, instruction, model, mode=None,temperature=.35
         since=datetime.fromtimestamp(time.time()-3600,timezone.utc).isoformat()
         count=await db.scalar(select(func.count()).select_from(StudioRun).where(StudioRun.created>=since))
         if count>=int(os.getenv('AI_HOURLY_LIMIT','30')): raise HTTPException(429,'本小时任务配额已用完')
+        await ensure_runner_ready()
         files=await service.list_files(project_id)
         messages=await service.list_messages(project_id)
         run_id=uuid.uuid4().hex
         payload={'instruction':instruction,'model':model,'mode':mode,'base_version':project['current_version'],'files':[{'path':f['path'],'content':f['content'],'language':f['language']} for f in files],'history':[{'role':m['role'],'content':m['content'][:2000]} for m in messages[-4:]]}
         payload['temperature']=temperature
         payload['interactive']=interactive
+        from services.agent_profiles import snapshot
+        payload['agents']=await snapshot(owner,db)
         resume_result = {}
         if retry_of:
             previous = await db.get(StudioRun, retry_of)
             if not previous or previous.owner != str(owner) or previous.project_id != project_id:
                 raise HTTPException(404, '原任务不存在')
             old_payload = json.loads(previous.payload)
+            if old_payload.get('leader_feedback'):
+                payload['leader_feedback']=old_payload['leader_feedback']
+                payload['original_instruction']=old_payload.get('original_instruction',old_payload['instruction'])
+            payload['agents']=old_payload.get('agents') or payload['agents']
             if previous.status in ACTIVE | {'awaiting_input'}:
                 raise HTTPException(409, '原任务仍在执行')
             if mode == 'team':
@@ -252,18 +307,41 @@ async def start(owner, project_id, instruction, model, mode=None,temperature=.35
                     if old_result.get('draft_files'):
                         resume_result['draft_files'] = old_result['draft_files']
                     payload['previousError'] = previous.error
+                    if can_resume_verification(old_result, previous.error) and old_result.get('team', {}).get('engineer'):
+                        resume_result['team'] = old_result['team']
+                        resume_result['resume_stage'] = 'verification'
+                        # Older runs saved test inputs in their tool trace only.
+                        engineer = resume_result['team']['engineer']
+                        if 'tests' not in engineer:
+                            build_event = next((e for e in json.loads(previous.events) if e.get('tool')=='runner.build_and_test' and e.get('inputs')), {})
+                            engineer['tests'] = build_event.get('inputs', {}).get('tests', [])
+
                 else:
                     payload['instruction'] += '\n请保留此前用户已选择的业务规则：\n' + json.dumps(payload['decisions'], ensure_ascii=False)
+            elif old_payload.get('base_version') == project['current_version']:
+                old_result = json.loads(previous.result)
+                if can_resume_verification(old_result, previous.error):
+                    resume_result = {**old_result, 'resume_stage':'verification'}
+                    resume_result.pop('error_code', None)
         db.add(StudioRun(id=run_id,owner=str(owner),project_id=project_id,payload=json.dumps(payload,ensure_ascii=False),result=json.dumps(resume_result,ensure_ascii=False)))
         await db.commit()
         await service.add_message(project_id,'user',instruction,'plan',0,model)
-        db.add(StudioConversation(project_id=project_id,owner=str(owner),run_id=run_id,sender='user',recipient='all',kind='message',content=instruction))
+        db.add(StudioConversation(project_id=project_id,owner=str(owner),run_id=run_id,sender='user',recipient='leader',kind='message',content=instruction))
         await db.commit()
         tasks[run_id]=asyncio.create_task(execute(run_id,owner,project_id,payload))
         return {'id':run_id}
 
 
 async def commit_result(owner, project_id, base_version, result, run_id):
+    from services.leadership import apply_feedback
+    async with start_lock:
+        if run_id!='visual':
+            await apply_feedback(run_id,locked=True)
+            await change(run_id,stage='save')
+        return await _commit_result(owner,project_id,base_version,result,run_id)
+
+
+async def _commit_result(owner, project_id, base_version, result, run_id):
     async with db_manager.session() as db:
         service=AfProjectService(db,str(owner)); project=await service.get_project(project_id)
         if project['current_version']!=base_version: raise HTTPException(409,'项目已有新版本，请重新生成，避免覆盖其他修改')
@@ -277,15 +355,45 @@ async def commit_result(owner, project_id, base_version, result, run_id):
 
 
 async def execute(run_id,owner,project_id,payload):
+    from services.leadership import Replan,apply_feedback
     try:
+        for _ in range(8):
+            try:
+                await apply_feedback(run_id)
+                await _execute(run_id,owner,project_id,payload)
+                return
+            except Replan:
+                async with db_manager.session() as db:
+                    payload=json.loads((await db.get(StudioRun,run_id)).payload)
+        await change(run_id,status='interrupted',stage='leader',error='本轮调整较多，需求与草稿已保留，可继续任务。')
+    except asyncio.CancelledError:
+        await change(run_id,status='cancelled',stage='cancelled',error='任务已停止；已保存版本不变')
+    except Exception:
+        await change(run_id,status='interrupted',stage='leader',error='调度暂未完成，需求与草稿已保留，请继续任务。')
+    finally:
+        if tasks.get(run_id) is asyncio.current_task():tasks.pop(run_id,None)
+
+
+async def _execute(run_id,owner,project_id,payload):
+    try:
+        if not payload.get('agents'):
+            from services.agent_profiles import snapshot
+            payload['agents']=await snapshot(owner)
+            await change(run_id,payload=payload)
         await change(run_id,status='running')
         if payload.get('mode')=='team':
             from services.team import execute_team
             await execute_team(run_id,owner,project_id,payload)
             return
-        await event(run_id,'plan','产品规划：拆分页面、数据与验收步骤')
-        plan=await call_model(owner,project_id,run_id,payload['model'],'plan',[{'role':'system','content':'你是产品经理和架构师。返回 JSON {"goal":"目标","tasks":["具体任务"],"acceptance":["可验证标准"]}。只规划当前需求，至多6项任务。不要声称已执行。'},{'role':'user','content':payload['instruction']}],1800)
-        await event(run_id,'plan',json.dumps(plan,ensure_ascii=False))
+        async with db_manager.session() as db:
+            saved_result = json.loads((await db.get(StudioRun,run_id)).result)
+        resume_verification = saved_result.get('resume_stage') == 'verification'
+        if resume_verification:
+            plan = saved_result.get('plan', {})
+        else:
+            await event(run_id,'plan','我先拆分本轮目标，再交给工程师实现与验证。',role='leader')
+            plan=await call_model(owner,project_id,run_id,payload['model'],'plan',[{'role':'system','content':'你是团队领导。当前为工程师模式，由你拆解任务并安排工程师实施和自测。返回 JSON {"goal":"目标","tasks":["分配给工程师的具体任务"],"acceptance":["可验证标准"]}。只规划当前需求，至多6项任务。不要声称已执行。'},{'role':'user','content':payload['instruction']}],1800)
+            await event(run_id,'plan',json.dumps(plan,ensure_ascii=False),role='leader',recipient='engineer',kind='handoff',output=plan)
         from models.studio import StudioCloud
         async with db_manager.session() as db:
             cloud=await db.get(StudioCloud,project_id)
@@ -298,14 +406,20 @@ async def execute(run_id,owner,project_id,payload):
         async def generate_candidate(model):
             files=payload['files']; failure=''
             for attempt in range(3):
-                await event(run_id,'code' if not attempt else 'repair',f'{model}：'+('增量修改代码' if not attempt else f'根据检查错误进行第 {attempt} 次修复'))
+                if not (resume_verification and attempt == 0):
+                    await event(run_id,'code' if not attempt else 'repair',f'{model}：'+('增量修改代码' if not attempt else f'根据检查错误进行第 {attempt} 次修复'))
                 user={'request':payload['instruction'],'plan':plan,'cloud':config,'currentFiles':files,'previousError':failure}
                 try:
-                    patch=await call_model(owner,project_id,run_id,model,'code' if not attempt else 'repair',[{'role':'system','content':ENGINEER},*payload['history'],{'role':'user','content':json.dumps(user,ensure_ascii=False)}],temperature=payload.get('temperature',.35))
-                    files=merge_patch(files,patch)
-                    if payload['mode']!='race':
-                        await change(run_id,result={'draft_files':files,'plan':plan})
-                    await event(run_id,'build','修改文件：'+', '.join(patch_paths(patch)))
+                    if resume_verification and attempt == 0:
+                        files = saved_result['draft_files']
+                        patch = {'summary':saved_result.get('summary','应用已更新'), 'tests':saved_result.get('developer_tests',[])}
+                        await event(run_id,'test','继续验证已保存的代码，不重复生成。',role='engineer')
+                    else:
+                        patch=await call_model(owner,project_id,run_id,model,'code' if not attempt else 'repair',[{'role':'system','content':ENGINEER},*payload['history'],{'role':'user','content':json.dumps(user,ensure_ascii=False)}],temperature=payload.get('temperature',.35))
+                        files=merge_patch(files,patch)
+                        if payload['mode']!='race':
+                            await change(run_id,result={'draft_files':files,'plan':plan,'developer_tests':patch.get('tests',[]),'summary':str(patch.get('summary','应用已更新'))[:2000]})
+                        await event(run_id,'build','修改文件：'+', '.join(patch_paths(patch)))
                     await event(run_id,'test','编译依赖并运行隔离浏览器测试')
                     checked=await checked_build(run_id,files,patch.get('tests',[]),role='engineer')
                     for line in checked.get('logs',[]): await event(run_id,'test',line)
@@ -320,6 +434,7 @@ async def execute(run_id,owner,project_id,payload):
                         await event(run_id,'error',model+' 候选未通过，不会进入选择列表')
         if payload['mode']=='race':
             results=await asyncio.gather(*(generate_candidate(model) for model in models),return_exceptions=True)
+            if any(isinstance(result,Replan) for result in results):raise Replan()
             candidates=[r for r in results if isinstance(r,dict)]
             for model,result in zip(models,results):
                 if isinstance(result,Exception):await event(run_id,'error',model+' 候选失败：'+(str(result)[:500] if isinstance(result,ValueError) else '模型服务或构建服务未完成'))
@@ -333,6 +448,8 @@ async def execute(run_id,owner,project_id,payload):
             version=await commit_result(owner,project_id,payload['base_version'],candidates[0],run_id)
             await event(run_id,'save',f"{candidates[0]['summary']}\n\n构建与浏览器检查通过，已保存为 v{version}。可以在右侧预览中体验。",role='engineer',kind='summary')
             await change(run_id,status='done',stage='done',result={'version':version,'summary':candidates[0]['summary'],'plan':plan})
+    except Replan:
+        raise
     except asyncio.CancelledError:
         await change(run_id,status='cancelled',stage='cancelled',error='任务已停止；已保存版本不变')
     except Exception as exc:
@@ -341,8 +458,13 @@ async def execute(run_id,owner,project_id,payload):
         elif isinstance(exc,TimeoutError): message='任务阶段超时，请缩小需求后重试'
         elif isinstance(exc,ValueError): message=str(exc)
         else: message='任务执行失败，请检查服务日志或重试'
+        if isinstance(exc, RunnerUnavailable):
+            async with db_manager.session() as db:
+                result = json.loads((await db.get(StudioRun,run_id)).result)
+            result['error_code'] = 'runner_unavailable'
+            await change(run_id, result=result)
+            await event(run_id,'test','验证服务暂不可用。代码和交接已保存，恢复后从验收继续。',role='qa' if payload.get('mode')=='team' else 'engineer',kind='activity',state='error')
         await change(run_id,status='error',stage='error',error=message)
-    finally: tasks.pop(run_id,None)
 
 
 async def cancel(owner,run_id):

@@ -24,3 +24,10 @@ test('terminal issues remain visible and actionable without dumping diagnostics'
   assert.match(runExperience(run({status:'awaiting_input'})).description,/确认卡/);
   assert.match(runExperience(run({status:'review'})).description,/选择/);
 });
+test('verification outage offers resume instead of suggesting generation again',()=>{
+  const failed=run({status:'error',error:'构建服务不可用，请启动 Docker Compose runner 服务',result:{draft_files:[{path:'App.jsx',content:'saved'}]}});
+  assert.equal(runExperience(failed).resumeVerification,true);
+  assert.match(runExperience(failed).description,/继续验收/);
+  assert.doesNotMatch(runExperience(failed).description,/Docker/);
+  assert.equal(runExperience(run({status:'error',error:'应用测试未通过'})).resumeVerification,false);
+});

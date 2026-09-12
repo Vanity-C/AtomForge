@@ -4,6 +4,7 @@ import {ArrowLeft, Camera, Check, Loader2, RotateCcw, Upload} from 'lucide-react
 import {toast} from 'sonner';
 import {LoginGate, TopBar, useAuth} from '@/components/AppShell';
 import AccountAvatar from '@/components/AccountAvatar';
+import ExternalAccounts from '@/components/ExternalAccounts';
 import UsernameField from '@/components/UsernameField';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
@@ -100,6 +101,7 @@ export default function Account() {
       <Link to="/dashboard" className="mb-6 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="h-3.5 w-3.5"/>返回我的项目</Link>
       <h1 className="text-2xl font-semibold tracking-tight">个人中心</h1><p className="mb-7 mt-2 text-sm text-muted-foreground">管理你的账号资料，让团队更容易认出你。</p>
       <ProfileEditor key={user.id} user={user}/>
+      <div className="mt-8 rounded-2xl border bg-card p-6"><ExternalAccounts/></div>
     </main>}
   </div>;
 }

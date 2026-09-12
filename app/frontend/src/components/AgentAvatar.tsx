@@ -1,7 +1,10 @@
 import {useId} from 'react';
 import {TEAM_ROLES} from '@/lib/studio';
+import {useAgents} from './AgentProvider';
+import type {AgentProfile} from '@/lib/agentProfiles';
 
 const palettes:Record<string,{bg:string;coat:string;ink:string;shell:string}>={
+  leader:{bg:'#f3efff',coat:'#a18aca',ink:'#655183',shell:'#d7c9ef'},
   product:{bg:'#fff2de',coat:'#eba044',ink:'#935524',shell:'#ffd08b'},
   design:{bg:'#fff0f6',coat:'#d87cb0',ink:'#88436e',shell:'#f5b8d8'},
   architect:{bg:'#eaf7f4',coat:'#5baca2',ink:'#30695f',shell:'#afe2d6'},
@@ -10,12 +13,16 @@ const palettes:Record<string,{bg:string;coat:string;ink:string;shell:string}>={
 };
 
 /** Original egg companions: one shell silhouette, five profession-specific toolkits. */
-export default function AgentAvatar({role:requestedRole,className='h-9 w-9'}:{role:string;className?:string}){
+export default function AgentAvatar({role:requestedRole,className='h-9 w-9',person}:{role:string;className?:string;person?:AgentProfile}){
   const id=useId().replace(/:/g,'');
-  const role=palettes[requestedRole]?requestedRole:'engineer';
+  const {team}=useAgents();
+  const profile=person||team[requestedRole];
+  const style=profile?.avatar_style||requestedRole;
+  const role=palettes[style]?style:'engineer';
   const p=palettes[role];
-  const person=TEAM_ROLES.find(r=>r.id===role)!;
-  return <svg viewBox="0 0 96 96" role="img" aria-label={`${person.alias} ${person.nickname}的蛋形头像`} className={`agent-avatar shrink-0 overflow-visible ${className}`}>
+  const name=profile?.name||TEAM_ROLES.find(r=>r.id===role)!.alias;
+  if(profile?.avatar)return <img src={profile.avatar} alt={`${name}的头像`} className={`shrink-0 rounded-full object-cover ${className}`}/>;
+  return <svg viewBox="0 0 96 96" role="img" aria-label={`${name}的蛋形头像`} className={`agent-avatar shrink-0 overflow-visible ${className}`}>
     <defs>
       <radialGradient id={id} cx="30%" cy="20%" r="85%"><stop stopColor="#fff"/><stop offset="1" stopColor={p.bg}/></radialGradient>
       <radialGradient id={`${id}-shell`} cx="32%" cy="24%" r="80%"><stop stopColor="#fffdf4"/><stop offset=".5" stopColor={p.bg}/><stop offset="1" stopColor={p.shell}/></radialGradient>
@@ -31,6 +38,7 @@ export default function AgentAvatar({role:requestedRole,className='h-9 w-9'}:{ro
       <circle cx="39" cy="45" r="1" fill="#fff"/><circle cx="58" cy="45" r="1" fill="#fff"/>
       <ellipse cx="30" cy="54" rx="5" ry="2.7" fill="#f1a1a1" opacity=".5"/><ellipse cx="65" cy="54" rx="5" ry="2.7" fill="#f1a1a1" opacity=".5"/>
       <path d="M43 55q5 6 10 0" stroke={p.ink} fill="none" strokeWidth="2" strokeLinecap="round"/>
+      {role==='leader'&&<><path d="M30 27q18-23 36 0" fill={p.ink}/><path d="M29 28h38" stroke={p.coat} strokeWidth="4" strokeLinecap="round"/><path d="m45 64 4 4 4-4-4 14Z" fill={p.ink}/><circle cx="62" cy="64" r="4" fill="#dec075"/></>}
       {role==='product'&&<><path d="m35 65 11 3-11 5Zm25 0-11 3 11 5Z" fill={p.ink}/><circle cx="47.5" cy="68" r="2.5" fill={p.coat}/><path d="M37 20h23l-3 6H39Z" fill={p.coat}/><rect x="40" y="12" width="17" height="10" rx="4" fill={p.coat}/><path d="M41 20h15" stroke={p.ink} strokeWidth="2"/></>}
       {role==='design'&&<><path d="M27 24C23 15 37 8 51 10s20 8 17 15l-18 4Z" fill={p.ink}/><path d="M31 27q18 5 33-1" fill="none" stroke={p.coat} strokeWidth="4" strokeLinecap="round"/><path d="m48 11 3-5" stroke={p.ink} strokeWidth="3" strokeLinecap="round"/><circle cx="28" cy="64" r="3" fill="#eaa94d"/><circle cx="35" cy="68" r="2" fill={p.coat}/></>}
       {role==='architect'&&<><path d="M28 28h40M32 27c0-12 7-16 16-16s16 4 16 16" fill="#d2ebe5" stroke={p.ink} strokeWidth="2.5" strokeLinecap="round"/><path d="M48 13v12" stroke={p.coat} strokeWidth="3"/><g fill="none" stroke={p.ink} strokeWidth="2"><rect x="28" y="39" width="17" height="14" rx="5"/><rect x="50" y="39" width="17" height="14" rx="5"/><path d="M45 44h5"/></g></>}

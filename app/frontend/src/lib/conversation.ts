@@ -1,9 +1,12 @@
+import type {AgentProfile,AgentTeam} from './agentProfiles';
 export type ConversationDetail = {
+  agent?:AgentProfile;
   call_id?: string; tool?: string; state?: string; duration_ms?: number;
   inputs?: unknown; output?: unknown; plan?: string[];
   diagnostic?: string;
 };
 export type ConversationMessage = {
+  team?:AgentTeam;
   id: number; run_id?: string; sender: string; recipient: string; kind: string;
   content: string; detail: ConversationDetail; created: string;
 };

@@ -1,14 +1,15 @@
 /** DeepSeek generation profiles and authenticated incremental job client. */
 import { invoke } from '@/lib/sdk';
 
-export interface ModelOption { id: string; label: string; provider: string; traits: string[]; note: string; }
+export interface ModelOption { id: string; label: string; provider: string; traits: string[]; note: string; available?: boolean; }
+export interface ModelCatalogue {items: ModelOption[]; providers: {id: string; label: string; error: string | null}[];}
 export interface GenerationProfile { provider: string; model: string; temperaturePct: number; autoPreview: boolean; }
 export const DEFAULT_PROFILE: GenerationProfile = { provider: 'deepseek', model: 'deepseek-flash', temperaturePct: 35, autoPreview: true };
 export const MODEL_CATALOGUE: ModelOption[] = [
-  { id: 'deepseek-flash', label: 'DeepSeek Flash', provider: 'deepseek', traits: ['快速', '默认'], note: '适合应用生成和多轮修改' },
-  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', provider: 'deepseek', traits: ['复杂需求'], note: '用于更复杂的应用设计与代码生成' },
+  { id: 'deepseek-flash', label: 'DeepSeek V4.1 Flash', provider: 'deepseek', traits: ['快速', '默认'], note: '适合应用生成和多轮修改' },
+  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro · 0813', provider: 'deepseek', traits: ['复杂需求'], note: '用于更复杂的应用设计与代码生成' },
 ];
-export function findModel(id: string): ModelOption { return MODEL_CATALOGUE.find(m => m.id === id) ?? MODEL_CATALOGUE[0]; }
+export function findModel(id: string): ModelOption { return MODEL_CATALOGUE.find(m => m.id === id) ?? {id, label: id, provider: id.startsWith('gpt-') ? 'codex' : 'deepseek', traits: [], note: ''}; }
 export interface ChatTurn { role: 'system' | 'user' | 'assistant'; content: string; }
 export interface StreamHandlers { onChunk?: (delta: string, aggregated: string) => void; onComplete?: (full: string) => void; }
 interface JobUpdate { status: 'running' | 'done' | 'error' | 'cancelled'; delta: string; offset: number; error: string; }

@@ -1,0 +1,157 @@
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { createServer as createPortProbe } from 'node:net';
+import { createServer, build, preview } from 'vite';
+import react from '@vitejs/plugin-react-swc';
+import { chromium, expect } from '@playwright/test';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const production = process.argv.includes('--production');
+// Vite treats port 0 as its default port, which Windows may reserve for Hyper-V.
+const probe = createPortProbe();
+await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+const port = probe.address().port;
+await new Promise(resolve => probe.close(resolve));
+const config = { configFile: false, root, cacheDir: 'node_modules/.vite-editor-check', plugins: [react()], resolve: { alias: { '@': path.join(root, 'src') } }, server: { host: '127.0.0.1', port }, preview: { host: '127.0.0.1', port }, build: { outDir: 'node_modules/.editor-test-dist', rollupOptions: { input: path.join(root, 'scripts/fixtures/editor.html') } }, logLevel: 'error' };
+if (production) await build(config);
+const server = production ? await preview(config) : await createServer(config);
+if (!production) await server.listen();
+const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge' });
+const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+const errors = [];
+const workers = [];
+page.on('pageerror', error => errors.push(error.message));
+page.on('worker', worker => workers.push(worker.url()));
+const url = `http://127.0.0.1:${server.httpServer.address().port}/scripts/fixtures/editor.html`;
+try {
+  await page.goto(url);
+  await expect(page.getByRole('button', { name: '显示文件', exact: true })).toBeVisible({ timeout: 30000 });
+  assert.equal(workers.length, 0, 'Hidden file panel must not start editor workers');
+  await page.getByRole('button', { name: '显示文件', exact: true }).click();
+  await expect(page.locator('[data-editor-state="ready"]')).toBeVisible({ timeout: 60000 });
+  await expect(page.getByRole('button', { name: '文件标签 src/styles.css', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '打开文件 src/styles.css', exact: true }).click();
+  await expect(page.getByRole('button', { name: '文件标签 src/styles.css', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '文件标签 App.jsx', exact: true }).click();
+  const content = page.getByRole('textbox', { name: '文件内容', exact: true });
+  await content.focus();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.insertText('// draft');
+  await expect(page.getByTestId('draft')).toContainText('// draft');
+  await page.getByRole('button', { name: '关闭文件 src/styles.css', exact: true }).click();
+  await expect(page.getByRole('button', { name: '文件标签 src/styles.css', exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('draft')).toContainText('// draft');
+  await page.getByRole('button', { name: '关闭文件 App.jsx', exact: true }).click();
+  await expect(page.getByRole('alertdialog')).toBeVisible();
+  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
+  await expect(page.getByTestId('draft')).toContainText('// draft');
+  await page.getByRole('button', { name: '文件标签 App.jsx', exact: true }).click();
+  await expect(page.getByTestId('draft')).toContainText('// draft');
+  await page.getByRole('button', { name: '打开文件 src/styles.css', exact: true }).click();
+  await expect(page.getByTestId('message')).toHaveText('请先保存');
+  await expect(page.getByRole('button', { name: '文件标签 App.jsx', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await content.focus();
+  let undoSteps = 0;
+  while (await page.getByRole('button', { name: '保存版本', exact: true }).isEnabled() && undoSteps < 10) {
+    const before = await page.getByTestId('draft').textContent();
+    await page.keyboard.press('Control+z');
+    await expect(page.getByTestId('draft')).not.toHaveText(before);
+    undoSteps++;
+  }
+  await expect(page.getByRole('button', { name: '保存版本', exact: true })).toBeDisabled();
+  for (let i = 0; i < undoSteps; i++) await page.keyboard.press('Control+y');
+  await expect(page.getByTestId('draft')).toContainText('// draft');
+  await page.keyboard.press('Control+s');
+  await expect(page.getByRole('button', { name: '正在保存', exact: true })).toBeDisabled();
+  await page.keyboard.type('must-not-be-saved');
+  await expect(page.getByTestId('version')).toHaveText('v2');
+  await expect(page.getByTestId('saved')).toContainText('// draft');
+  await expect(page.getByTestId('saved')).not.toContainText('must-not-be-saved');
+  await content.focus(); await page.keyboard.press('Control+Home'); await page.keyboard.press('Control+f');
+  await expect(page.locator('.find-widget.visible')).toBeVisible();
+  await page.keyboard.type('greeting');
+  await expect(page.locator('.find-widget .matchesCount')).toContainText('2');
+  await page.keyboard.press('Escape');
+  await content.focus(); await page.keyboard.press('Control+h');
+  await expect(page.locator('.find-widget.replaceToggled')).toBeVisible();
+  await page.keyboard.press('Escape');
+  // Language-service completion must work in the actual bundled worker.
+  await content.focus(); await page.keyboard.press('Control+End'); await page.keyboard.press('Enter'); await page.keyboard.type('Math.');
+  await page.keyboard.press('Control+Space');
+  await expect(page.locator('.suggest-widget.visible')).toBeVisible({ timeout: 30000 });
+  await expect(page.locator('.suggest-widget.visible')).toContainText('abs');
+  await page.keyboard.press('Escape');
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: '放弃当前修改', exact: true }).click();
+  await expect(page.getByRole('button', { name: '保存版本', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '打开文件 src/styles.css', exact: true }).click();
+  await expect(page.locator('.workbench-status')).toContainText('CSS');
+  await content.focus(); await page.keyboard.press('Control+End'); await page.keyboard.type('/* retained */');
+  await page.getByRole('button', { name: '模拟保存失败', exact: true }).click();
+  await page.getByRole('button', { name: '保存版本', exact: true }).click();
+  await expect(page.getByTestId('message')).toHaveText('保存失败');
+  await expect(page.getByTestId('draft')).toContainText('/* retained */');
+  await page.getByRole('button', { name: '模拟保存失败', exact: true }).click();
+  await page.getByRole('button', { name: '保存版本', exact: true }).click();
+  await expect(page.getByTestId('version')).toHaveText('v3');
+  for (const file of ['config.json', 'index.html']) {
+    await page.getByRole('button', { name: `打开文件 ${file}`, exact: true }).click();
+    await content.focus(); await page.keyboard.press('Control+Space'); await page.keyboard.press('Escape');
+  }
+  await page.getByRole('button', { name: '切换只读', exact: true }).click();
+  await expect(page.locator('.workbench-status')).toContainText('只读');
+  await content.focus(); await page.keyboard.type('forbidden'); await page.keyboard.press('Control+s');
+  await expect(page.getByTestId('draft')).toBeEmpty();
+  await expect(page.getByTestId('version')).toHaveText('v3');
+  await page.getByRole('button', { name: '折叠资源管理器', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: '资源管理器' })).toHaveCount(0);
+  await page.getByRole('button', { name: '展开资源管理器', exact: true }).click();
+  await page.getByRole('button', { name: '自动换行', exact: true }).click();
+  await expect(page.getByRole('button', { name: '自动换行', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: '切换主题', exact: true }).click();
+  await expect(page.locator('.monaco-editor.vs-dark')).toBeVisible();
+  // Closing tabs only changes the workbench; project files remain available.
+  while (await page.locator('.workbench-tab').count()) {
+    await page.locator('.workbench-tab[data-active="true"]').getByRole('button', { name: /^关闭文件 / }).click();
+  }
+  await expect(page.getByText('从左侧选择文件，继续编辑', { exact: true })).toBeVisible();
+  await expect(content).toBeHidden();
+  await expect(page.getByRole('button', { name: /^打开文件 / })).toHaveCount(4);
+  await page.getByRole('button', { name: '打开文件 App.jsx', exact: true }).click();
+  await expect(content).toBeVisible();
+  await expect(page.getByTestId('saved')).toContainText('// draft');
+  await page.getByRole('button', { name: '切换只读', exact: true }).click();
+  await content.focus(); await page.keyboard.press('Control+End'); await page.keyboard.insertText('discard-me');
+  await page.getByRole('button', { name: '关闭文件 App.jsx', exact: true }).click();
+  await page.getByRole('button', { name: '放弃修改并关闭', exact: true }).click();
+  await expect(page.getByText('从左侧选择文件，继续编辑', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '打开文件 App.jsx', exact: true }).click();
+  await expect(page.getByTestId('saved')).not.toContainText('discard-me');
+  await expect(page.getByTestId('saved')).toContainText('// draft');
+  await page.getByRole('button', { name: '重新挂载', exact: true }).click();
+  await page.getByRole('button', { name: '重新挂载', exact: true }).click();
+  await expect(page.locator('[data-editor-state="ready"]')).toBeVisible();
+  assert(workers.length >= 2, 'Editor and language workers should be running');
+  assert(workers.every(worker => worker.startsWith(new URL(url).origin)), 'All workers must be served locally');
+  assert.deepEqual(errors, []);
+  console.log('PASS: close inactive/active/last tab, reopen without deleting files, cancel dirty close and discard then close');
+  console.log('PASS: lazy local editor, typing/undo, dirty guard, save shortcut/lock, find/replace, completion, failure recovery, read-only, tabs, theme and remount');
+  // Block the lazy module in a fresh browser context to exercise the fallback.
+  const fallback = await browser.newPage();
+  const modulePattern = /\/src\/lib\/monaco\.ts|\/assets\/monaco-[^/]+\.js/;
+  await fallback.route(modulePattern, route => route.abort());
+  await fallback.goto(url);
+  await fallback.getByRole('button', { name: '显示文件', exact: true }).click();
+  await expect(fallback.locator('[data-editor-state="fallback"]')).toBeVisible({ timeout: 30000 });
+  await fallback.getByRole('textbox', { name: '文件内容', exact: true }).fill('// safe fallback');
+  await fallback.getByRole('button', { name: '保存版本', exact: true }).click();
+  await expect(fallback.getByTestId('version')).toHaveText('v2');
+  await expect(fallback.getByTestId('saved')).toHaveText('// safe fallback');
+  await fallback.unroute(modulePattern);
+  await fallback.reload();
+  await fallback.getByRole('button', { name: '显示文件', exact: true }).click();
+  await expect(fallback.locator('[data-editor-state="ready"]')).toBeVisible({ timeout: 30000 });
+  console.log('PASS: network failure retains an editable, savable fallback');
+} catch (error) { console.error('Browser errors:', errors); throw error; }
+finally { await browser.close(); if (production) await new Promise(resolve => server.httpServer.close(resolve)); else await server.close(); }

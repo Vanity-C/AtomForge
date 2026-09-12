@@ -2,12 +2,17 @@ import {useEffect,useRef,useState} from 'react';
 import {Check,Clock3,Loader2,Pause} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {Textarea} from '@/components/ui/textarea';
-import {agentLabel,type PendingConfirmation} from '@/lib/studio';
+import {type PendingConfirmation} from '@/lib/studio';
+import {useTeam} from './AgentProvider';
+import type {AgentTeam} from '@/lib/agentProfiles';
 import {invoke,errorMessage} from '@/lib/sdk';
 import AgentPersona from './AgentPersona';
 
 type Draft={selections:Record<string,string>;other:Record<string,string>;feedback:string};
-export default function ConfirmationCard({runId,pending,serverTime,canEdit,onUpdated}:{runId:string;pending:PendingConfirmation;serverTime?:number;canEdit:boolean;onUpdated:()=>void}) {
+export default function ConfirmationCard({runId,pending,serverTime,canEdit,onUpdated,team}:{runId:string;pending:PendingConfirmation;serverTime?:number;canEdit:boolean;onUpdated:()=>void;team?:AgentTeam}) {
+  const members=useTeam(team);
+  const person=members.find(r=>r.id===pending.role)||members[0];
+  const agentLabel=(role:string)=>{const member=members.find(r=>r.id===role);return member?`${member.alias} · ${member.name}`:role;};
   const cacheKey=`atomforge.confirmation.${runId}.${pending.id}`;
   const [draft,setDraft]=useState<Draft>(()=>{
     const defaults={selections:Object.fromEntries(pending.choices.map(q=>[q.id,q.recommended])),other:{},feedback:''};
@@ -53,7 +58,7 @@ export default function ConfirmationCard({runId,pending,serverTime,canEdit,onUpd
   const custom=pending.choices.some(q=>draft.selections[q.id]==='other')||!!draft.feedback.trim();
   const valid=pending.choices.every(q=>draft.selections[q.id]&&(draft.selections[q.id]!=='other'||draft.other[q.id]?.trim()));
   return <section aria-label="关键细节确认" className="space-y-4 rounded-xl border border-primary/30 bg-primary/[0.03] p-3">
-    <h3 className="flex items-center gap-2 text-sm font-semibold"><AgentPersona role="product" avatarClassName="h-8 w-8"/>Milo 请你确认：{pending.title}</h3>
+    <h3 className="flex items-center gap-2 text-sm font-semibold"><AgentPersona role={person.id} profile={person.profile} avatarClassName="h-8 w-8"/>{person.alias} 请你确认：{pending.title}</h3>
     <div className="sticky top-0 z-10 space-y-2 rounded-lg border bg-background p-3 text-xs shadow-sm">
       <p role="status" className="flex items-center gap-2 font-medium">{auto.paused?<Pause className="h-3.5 w-3.5"/>:<Clock3 className="h-3.5 w-3.5"/>}{auto.paused?'已暂停计时，等你决定':remaining>0?`${remaining} 秒后自动采用推荐项`:'正在采用推荐项，请稍候…'}</p>
       <p className="leading-5 text-muted-foreground">推荐项结合当前需求选出。选择其他方案或填写想法会暂停计时；刷新后保留计时状态。</p>

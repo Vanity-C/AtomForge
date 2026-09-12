@@ -16,10 +16,12 @@ from services.connections import read_connection,save_connection
 from routers.cloud import config,identity,rate
 
 router=APIRouter(prefix='/api/v1/connections',tags=['connections'])
-SECRET_FIELDS={'github_token','stripe_secret','stripe_webhook_secret','tavily_key'}
+SECRET_FIELDS={'github_token','gitee_token','netlify_token','stripe_secret','stripe_webhook_secret','tavily_key'}
 
 
 class Config(BaseModel):
+    gitee_token:str|None=Field(default=None,max_length=1000)
+    netlify_token:str|None=Field(default=None,max_length=1000)
     tavily_key:str|None=Field(default=None,max_length=500)
     github_token:str|None=Field(default=None,max_length=500)
     github_repo:str|None=Field(default=None,max_length=160)

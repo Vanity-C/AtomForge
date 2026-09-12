@@ -145,7 +145,7 @@ export default function SharedApp() {
         {tab === 'preview' ? (
           <PreviewFrame files={files} artifact={artifact} cloudSlug={cloudSlug} storageKey={`share-${slug}`} />
         ) : (
-          <CodePanel files={files} activePath={activePath} onSelect={setActivePath} readOnly />
+          <CodePanel key={slug} files={files} activePath={activePath} onSelect={setActivePath} readOnly />
         )}
       </main>
     </div>

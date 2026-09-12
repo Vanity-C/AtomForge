@@ -12,6 +12,7 @@ async def summary(db,owner):
     b=await db.get(StudioBudget,str(owner));prices=json.loads(b.prices) if b else {}
     estimated=0;missing=False
     for model,i,o in rows:
+        if model.startswith('gpt-'):continue  # Subscription usage has no per-token API charge.
         price=prices.get(model)
         if price:estimated+=(i*price['input']+o*price['output'])/1000000
         else:missing=True

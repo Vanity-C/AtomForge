@@ -221,7 +221,7 @@ interface SettingsPayload {
 function toProfile(payload?: SettingsPayload): GenerationProfile {
   if (!payload) return { ...DEFAULT_PROFILE };
   return {
-    provider: DEFAULT_PROFILE.provider,
+    provider: payload.provider || findModel(payload.model).provider,
     model: findModel(payload.model).id,
     temperaturePct:
       typeof payload.temperature_pct === 'number'

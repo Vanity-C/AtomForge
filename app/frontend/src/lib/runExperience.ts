@@ -2,9 +2,12 @@ import type {StudioRun} from './studio';
 
 export function runExperience(run: StudioRun) {
   const active=['queued','running'].includes(run.status);
+  const resumeVerification=!!run.result.draft_files?.length&&(run.result.error_code==='runner_unavailable'||/构建服务不可用|验证服务尚未就绪/.test(run.error));
   const latest=run.events.at(-1);
   const recovering=active&&(latest?.state==='recovering'||run.stage==='repair'||run.stage==='recovering');
-  const roles:Record<string,string>={product:'Milo 正在梳理需求',design:'Luna 正在设计交互',architect:'Ollie 正在整理实现方案',engineer:'Neo 正在修改代码',qa:'Pip 正在验证功能'};
+  const names:Record<string,string>={product:'Milo',design:'Luna',architect:'Ollie',engineer:'Neo',qa:'Pip'};
+  const work:Record<string,string>={product:'梳理需求',design:'设计交互',architect:'整理实现方案',engineer:'修改代码',qa:'验证功能'};
+  const roles=Object.fromEntries(Object.entries(work).map(([role,action])=>[role,`${run.agents?.[role]?.name||names[role]} 正在${action}`]));
   let title=run.status==='queued'?'团队即将开始':roles[latest?.role??'']||'团队正在处理';
   let description='你可以查看已生成的文件，或展开执行过程了解进展。';
   if(recovering){title='团队正在自动调整';description='正在重试当前步骤或修复检查发现的问题，无需重复发送需求。';}
@@ -18,6 +21,7 @@ export function runExperience(run: StudioRun) {
     if(/余额|预算|配额/.test(run.error))description='本次调用额度不足，请检查生成设置后再继续；已有成果会保留。';
     else if(/鉴权|密钥|not configured/i.test(run.error))description='模型连接需要检查，请更新生成设置后继续；已有成果会保留。';
     else if(/截断|输出.*完整/.test(run.error))description='这次修改未能完整生成，进度已保留；可继续任务或分步提出修改。';
+    if(resumeVerification){title='代码已保留，验证暂未完成';description='验证服务未能连接，应用还没有通过验收。服务恢复后点击“继续验收”，会直接检查已有代码，无需重新生成或再次描述需求。';}
   }
-  return {active,recovering,title,description};
+  return {active,recovering,title,description,resumeVerification};
 }

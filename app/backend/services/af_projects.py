@@ -202,6 +202,9 @@ class AfProjectService:
 
     async def delete_project(self, project_id: int) -> None:
         project = await self._load_owned_project(project_id, manage=True)
+        from models.delivery import Delivery
+        if await self.db.scalar(select(Delivery.id).where(Delivery.project_id==project_id,Delivery.status.in_({'queued','running'}))):
+            raise HTTPException(409,'请等待发布或部署任务完成，再删除项目')
         active = await self.db.scalar(select(StudioRun.id).where(StudioRun.project_id == project_id, StudioRun.status.in_({'queued', 'running', 'awaiting_input'})))
         if active:
             raise HTTPException(409, '请先停止此项目的任务，再删除项目')
@@ -450,7 +453,7 @@ class AfProjectService:
             )
             self.db.add(row)
             await self.db.commit()
-        if row.provider != DEFAULT_PROVIDER or row.model not in {"deepseek-flash", "deepseek-v4-pro"}:
+        if row.provider not in {"deepseek", "codex"} or not row.model:
             row.provider = DEFAULT_PROVIDER
             row.model = DEFAULT_MODEL
             await self.db.commit()
@@ -470,6 +473,8 @@ class AfProjectService:
         temperature_pct: int,
         auto_preview: bool,
     ) -> Dict[str, Any]:
+        from services.model_catalogue import validate_model
+        await validate_model(model, provider)
         stmt = (
             select(User_settings)
             .where(User_settings.user_id == self.owner_id)

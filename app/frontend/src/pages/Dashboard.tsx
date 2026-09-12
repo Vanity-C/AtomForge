@@ -2,15 +2,25 @@
  * Project dashboard: list, create and open projects.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import '@/styles/conversation-studio.css';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowUpRight,
   Clock,
-  FolderPlus,
+  Plus,
   Globe,
   Layers,
   Loader2,
-  Sparkles,
+  ArrowUp,
+  Home,
+  FolderOpen,
+  Lightbulb,
+  BookOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Users,
+  Settings2,
+  MessageSquare,
   Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -28,7 +38,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { LoginGate, TopBar, useAuth } from '@/components/AppShell';
+import { AccountMenu, BrandMark, LoginGate, TopBar, useAuth } from '@/components/AppShell';
 import { errorMessage } from '@/lib/sdk';
 import {
   createProject,
@@ -41,15 +51,16 @@ import { suggestProjectName } from '@/lib/agent/codegen';
 import { DEFAULT_PROFILE, type GenerationProfile } from '@/lib/agent/modelProvider';
 import AgentPersona from '@/components/AgentPersona';
 import StarterGallery from '@/components/StarterGallery';
-import {TEAM_ROLES} from '@/lib/studio';
+import {useTeam} from '@/components/AgentProvider';
 import AgentModeSwitch, {loadAgentMode,saveAgentMode} from '@/components/AgentModeSwitch';
 
-const IDEA_CHIPS = [
-  '做一个番茄钟，支持自定义时长和任务清单',
-  '做一个个人记账应用，按分类统计月度支出',
-  '做一个看板式待办应用，支持标签筛选',
-  '做一个健身打卡应用，有周视图和连续天数统计',
-];
+const SECTIONS = [
+  {id:'home', label:'开启新项目', Icon:Home},
+  {id:'projects', label:'我的项目', Icon:FolderOpen},
+  {id:'inspiration', label:'灵感', Icon:Lightbulb},
+  {id:'notes', label:'创作小贴士', Icon:BookOpen},
+] as const;
+type StudioSection = typeof SECTIONS[number]['id'];
 
 function relativeTime(value?: string): string {
   if (!value) return '刚刚';
@@ -65,9 +76,23 @@ function relativeTime(value?: string): string {
 }
 
 export default function Dashboard() {
+  const TEAM_ROLES=useTeam();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { authState, user } = useAuth();
+  const section = (SECTIONS.find(item=>item.id===searchParams.get('view'))?.id ?? 'home') as StudioSection;
+  const promptQuery = searchParams.get('prompt');
+  const [collapsed,setCollapsed] = useState(()=>{try{return localStorage.getItem('atomforge:sidebar-collapsed')==='true';}catch{return false;}});
+  const focusOnHome = useRef(false);
+  const selectSection = (next:StudioSection, focus=false) => {
+    focusOnHome.current = focus;
+    setSearchParams(previous=>{const params=new URLSearchParams(previous);if(next==='home')params.delete('view');else params.set('view',next);return params;});
+    if(next==='home'&&section==='home'&&focus)composer.current?.focus();
+  };
+  const toggleSidebar = () => {
+    setCollapsed(previous=>{const next=!previous;try{localStorage.setItem('atomforge:sidebar-collapsed',String(next));}catch{/* Layout remains usable without storage. */}return next;});
+  };
+
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState('');
@@ -77,6 +102,7 @@ export default function Dashboard() {
   const [profile, setProfile] = useState<GenerationProfile>(DEFAULT_PROFILE);
   const [pendingDelete, setPendingDelete] = useState<ProjectRecord | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const contentPane = useRef<HTMLElement>(null);
   const draftKey = authState === 'authenticated' && user ? `atomforge:create-draft:${user.id}` : '';
   const [draftOwner, setDraftOwner] = useState('');
   const [draftSaved, setDraftSaved] = useState(false);
@@ -84,9 +110,9 @@ export default function Dashboard() {
     if (!draftKey) { setDraftOwner(''); return; }
     let saved = '';
     try { saved = localStorage.getItem(draftKey) || ''; } catch { /* Storage may be unavailable. */ }
-    setPrompt((searchParams.get('prompt') ?? saved).slice(0, 6000));
+    setPrompt((promptQuery ?? saved).slice(0, 6000));
     setDraftOwner(draftKey);
-  }, [draftKey, searchParams]);
+  }, [draftKey, promptQuery]);
   useEffect(() => {
     if (!draftKey || draftOwner !== draftKey) return;
     try {
@@ -98,12 +124,18 @@ export default function Dashboard() {
   const fillIdea = (idea: string) => {
     const previous = prompt;
     setPrompt(idea);
-    // Wait until the example dialog has released its focus trap.
-    setTimeout(() => { composer.current?.focus(); composer.current?.scrollIntoView({block:'center', behavior:'smooth'}); }, 0);
+    selectSection('home',true);
     toast.success('需求已填入，准备好后再开始创建', previous.trim() ? {
       action: {label:'撤销', onClick:()=>setPrompt(previous)},
     } : undefined);
   };
+
+  useEffect(()=>{
+    contentPane.current?.scrollTo({top:0,behavior:'instant'});
+    if(section!=='home'||!focusOnHome.current)return;
+    const timer=setTimeout(()=>{composer.current?.focus();focusOnHome.current=false;},0);
+    return ()=>clearTimeout(timer);
+  },[section]);
 
   const refresh = useCallback(async () => {
     setListLoading(true);
@@ -174,8 +206,8 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
-      <TopBar authState={authState} user={user} brandTo="/dashboard" />
+    <div className={authState==='authenticated'?`conversation-studio ${collapsed?'sidebar-collapsed':''}`:'flex min-h-screen flex-col bg-background'}>
+      {authState!=='authenticated'&&<TopBar authState={authState} user={user} brandTo="/dashboard"/>}
 
       {authState === 'loading' ? (
         <div className="mx-auto w-full max-w-screen-xl flex-1 px-4 py-10 sm:px-6 lg:px-8">
@@ -188,31 +220,33 @@ export default function Dashboard() {
           description="你的项目、代码与对话记录都会保存在自己的账号下，随时回来继续迭代。"
         />
       ) : (
-        <main className="mx-auto w-full max-w-screen-xl flex-1 px-4 py-10 sm:px-6 lg:px-8">
-          <section className="mx-auto max-w-3xl pb-6 pt-4 sm:pb-10 sm:pt-10">
-            <div className="mb-5 flex justify-center -space-x-2" aria-label="你的智能体伙伴">
-              {(agentMode==='team'?TEAM_ROLES:TEAM_ROLES.filter(r=>r.id==='engineer')).map(r=><AgentPersona key={r.id} role={r.id} avatarClassName="h-16 w-16 sm:h-20 sm:w-20" className="ring-4 ring-background"/>)}
-            </div>
-            <h1 className="text-center text-2xl font-semibold tracking-tight sm:text-3xl">{agentMode==='team'?'和伙伴们一起，把想法做成应用':'和 Neo 一起，做出你的下一个应用'}</h1>
-            <p className="mt-3 text-center text-sm leading-6 text-muted-foreground">{agentMode==='team'?'Milo 会梳理需求并带队完成设计、开发与验收，只在必要决策时请你确认。':'告诉 Neo 你的想法，从第一版开始，边体验边完善。'}</p>
-            <div className="mt-7 rounded-2xl border bg-card p-4 shadow-sm sm:p-5">
-              <Textarea ref={composer} aria-label="描述你想要的应用" value={prompt} maxLength={6000} onChange={e=>setPrompt(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&!e.nativeEvent.isComposing){e.preventDefault();if(!creating&&prompt.trim().length>=4)void handleCreate();}}} disabled={creating} placeholder="你想做什么？描述一个想法，或说说它要解决的问题…" className="min-h-[120px] resize-none border-0 bg-transparent p-0 text-sm leading-7 shadow-none focus-visible:ring-0"/>
-              <div className="mt-2 flex flex-wrap justify-between gap-2 text-[11px] text-muted-foreground"><span>{draftSaved?'草稿已保留在此浏览器':'从一个具体的小需求开始'}</span><span>Ctrl / ⌘ + Enter 创建</span></div>
-              <div className="mt-4 flex flex-wrap items-start justify-between gap-4 border-t pt-4">
-                <AgentModeSwitch value={agentMode} disabled={creating} onChange={mode=>{setAgentMode(mode);saveAgentMode(mode);}}/>
-                <Button className="ml-auto gap-2 rounded-xl" disabled={creating||prompt.trim().length<4} onClick={handleCreate}>{creating?<Loader2 className="h-4 w-4 animate-spin"/>:<ArrowUpRight className="h-4 w-4"/>}{creating?'正在创建项目…':'创建并开始生成'}</Button>
+        <>
+          <aside className="conversation-sidebar" aria-label="工作室侧边栏">
+            <div className="sidebar-brand-row"><BrandMark to="/dashboard"/><Button variant="ghost" size="icon" className="sidebar-toggle" aria-label={collapsed?'展开侧边栏':'折叠侧边栏'} aria-expanded={!collapsed} aria-controls="studio-navigation" title={collapsed?'展开侧边栏':'折叠侧边栏'} onClick={toggleSidebar}>{collapsed?<PanelLeftOpen className="h-4 w-4"/>:<PanelLeftClose className="h-4 w-4"/>}</Button></div>
+            <nav id="studio-navigation" className="sidebar-navigation" aria-label="工作室导航">{SECTIONS.map(({id,label,Icon})=><button key={id} type="button" title={collapsed?label:undefined} aria-label={label} aria-current={section===id?'page':undefined} onClick={()=>selectSection(id,id==='home')}><Icon className="h-[18px] w-[18px]"/><span>{label}</span>{id==='projects'&&!listLoading&&<small>{projects.length}</small>}</button>)}</nav>
+            <div className="sidebar-recent"><p>最近项目</p>{listLoading?<span className="sidebar-hint">正在加载…</span>:listError?<button className="sidebar-retry" onClick={refresh}>加载失败，点击重试</button>:projects.length?projects.slice(0,6).map(project=><Link key={project.id} title={project.name} to={`/p/${project.id}`}><MessageSquare className="h-3.5 w-3.5"/><span>{project.name}</span></Link>):<span className="sidebar-hint">从第一个想法开始</span>}</div>
+            <div className="sidebar-bottom"><Link to="/agents" title={collapsed?'我的团队':undefined} aria-label="我的团队"><Users className="h-[18px] w-[18px]"/><span>我的团队</span></Link><Link to="/settings" title={collapsed?'生成设置':undefined} aria-label="生成设置"><Settings2 className="h-[18px] w-[18px]"/><span>生成设置</span></Link><div className="sidebar-account"><AccountMenu user={user}/></div></div>
+          </aside>
+          <main ref={contentPane} className="conversation-main">
+            <header className="conversation-page-heading"><span>{section==='home'?'你的个人工作室':SECTIONS.find(item=>item.id===section)?.label}</span>{section!=='home'&&<Button variant="ghost" size="sm" className="gap-2" onClick={()=>selectSection('home',true)}><Plus className="h-4 w-4"/>开启新项目</Button>}</header>
+            {section==='home'&&<section className="conversation-home" aria-label="开始新项目">
+              <div className="conversation-welcome">
+                <div className="conversation-team" aria-label="你的智能体伙伴">{TEAM_ROLES.map(r=><AgentPersona key={r.id} role={r.id} avatarClassName="h-12 w-12"/>)}</div>
+                <h1>今天，想把什么想法变成现实？</h1>
+                <p>从一句话开始，和你的团队一起，做出点不一样的。</p>
+                <div className="conversation-input-card">
+                  <Textarea ref={composer} aria-label="描述你想要的应用" value={prompt} maxLength={6000} onChange={e=>setPrompt(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&!e.nativeEvent.isComposing){e.preventDefault();if(!creating&&prompt.trim().length>=4)void handleCreate();}}} disabled={creating} placeholder="说说你的想法，或者，你想解决什么问题…" className="conversation-input"/>
+                  <div className="conversation-input-tools"><AgentModeSwitch compact value={agentMode} disabled={creating} onChange={mode=>{setAgentMode(mode);saveAgentMode(mode);}}/><div className="conversation-send-group"><span>{prompt.length?`${prompt.length} / 6000`:'Ctrl / ⌘ + Enter'}</span><Button size="icon" className="conversation-send" disabled={creating||prompt.trim().length<4} aria-label={creating?'正在创建项目':'发送需求并创建项目'} title="发送需求并创建项目" onClick={handleCreate}>{creating?<Loader2 className="h-5 w-5 animate-spin"/>:<ArrowUp className="h-5 w-5"/>}</Button></div></div>
+                </div>
+                <div className="conversation-composer-note"><span>{agentMode==='team'?'团队一起推敲方案，关键决定由你确认。':`${TEAM_ROLES.find(r=>r.id==='engineer')!.alias} 会负责规划、实现和检查。`}</span>{draftSaved&&<span>草稿已保存</span>}</div>
               </div>
-            </div>
-            <div className="mt-4 flex flex-wrap justify-center gap-2">{IDEA_CHIPS.map(chip=><button key={chip} type="button" disabled={creating} onClick={()=>fillIdea(chip)} className="rounded-full border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-50">{chip}</button>)}</div>
-            <p className="mt-4 text-center text-[11px] text-muted-foreground">{profile.model} · 每次创建都是独立的新项目</p>
-            <nav aria-label="首页快捷导航" className="mt-4 flex justify-center gap-5 text-xs text-muted-foreground"><a href="#inspiration" className="hover:text-primary">找灵感</a><a href="#projects" className="hover:text-primary">我的项目</a><a href="#getting-started" className="hover:text-primary">使用帮助</a></nav>
-          </section>
-
-          <StarterGallery onUse={fillIdea} disabled={creating}/>
-          <section id="projects" className="mt-10 scroll-mt-20">
+            </section>}
+            {section!=='home'&&<div className="conversation-section-content" key={section}>
+            {section==='projects'&&<>
+          <section id="projects" className="studio-projects">
             <div className="flex items-end justify-between gap-3">
               <div>
-                <h2 className="text-lg font-semibold tracking-tight">我的项目</h2>
+                <h1 className="text-3xl font-semibold tracking-tight">我的项目</h1>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {listLoading ? '正在加载…' : `共 ${projects.length} 个项目`}
                 </p>
@@ -240,20 +274,15 @@ export default function Dashboard() {
                 ))}
               </div>
             ) : projects.length === 0 ? (
-              <div className="mt-5 rounded-lg border border-dashed border-border bg-card/60 px-6 py-14 text-center">
-                <Layers className="mx-auto h-6 w-6 text-muted-foreground/60" />
-                <p className="mt-3 text-base font-semibold">还没有项目</p>
-                <p className="mx-auto mt-1.5 max-w-sm text-sm text-muted-foreground">
-                  在上面写下你的第一个想法，智能体会生成一个可运行的应用，代码和对话都会自动保存。
-                </p>
-              </div>
+              <div className="studio-empty"><span className="empty-index" aria-hidden="true">00</span><div><p className="text-lg font-medium">好作品，总有一个开始。</p><p className="mt-2 text-sm leading-6 text-muted-foreground">这里会收下你的每一个项目。现在，写下第一个想法。</p></div><Button variant="outline" className="gap-2" onClick={()=>selectSection('home',true)}><Plus className="h-4 w-4"/>新建项目</Button></div>
             ) : (
               <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {projects.map((project) => (
+                {projects.map((project, index) => (
                   <div
                     key={project.id}
-                    className="group flex flex-col rounded-lg border border-border bg-card p-5 transition-shadow duration-200 ease-out-quart hover:md:shadow-sm"
+                    className="studio-project-card group"
                   >
+                    <div className="mb-6 flex items-center justify-between"><span className="font-mono text-xs text-muted-foreground">{String(index+1).padStart(2,'0')} / PROJECT</span><ArrowUpRight className="h-5 w-5 text-muted-foreground"/></div>
                     <div className="flex items-start justify-between gap-2">
                       <button
                         type="button"
@@ -288,7 +317,7 @@ export default function Dashboard() {
                       {project.description || project.initial_prompt || '暂无描述'}
                     </p>
 
-                    <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
+                    <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                       <span className="tnum inline-flex items-center gap-1">
                         <Layers className="h-3.5 w-3.5" />v{project.current_version || 0}<span> · {project.agent_mode==='team'?'团队项目':'工程师项目'}</span>
                         {project.role&&project.role!=='owner'&&<span> · {project.role==='editor'?'协作编辑':'只读'}</span>}
@@ -313,18 +342,22 @@ export default function Dashboard() {
               </div>
             )}
           </section>
-          <section id="getting-started" aria-label="使用帮助" className="mt-10 scroll-mt-20 border-t pt-8">
-            <h2 className="text-lg font-semibold">需要一点帮助？</h2>
+            </>}
+            {section==='inspiration'&&<StarterGallery onUse={fillIdea} disabled={creating}/>}
+            {section==='notes'&&<section id="getting-started" aria-label="使用帮助">
+            <h1 className="text-3xl font-semibold">创作小贴士</h1>
             <p className="mt-1 text-sm text-muted-foreground">从第一句话到第一版应用。</p>
-            <div className="mt-4 divide-y rounded-xl border bg-card px-4 sm:px-5">{[
-              ['第一次创建，应该怎么描述？','说清楚给谁用、解决什么问题，以及最重要的两三个操作。例如：给自己用的记账本，可以新增支出、按月筛选，刷新后保留记录。也可以先试用上方灵感库，再修改示例需求。'],
-              ['工程师和团队模式怎么选择？','简单明确的需求可以交给 Neo；需要先讨论方案时选择团队模式，Milo 会组织需求梳理、设计、开发与验收，只在必要决策时请你确认。模式在创建项目时确定，之后保持固定；每次创建都有独立的对话和代码。'],
+            <div className="mt-6 divide-y border-y">{[
+              ['第一次创建，应该怎么描述？','说清楚给谁用、解决什么问题，以及最重要的两三个操作。例如：给自己用的记账本，可以新增支出、按月筛选，刷新后保留记录。也可以先试用侧边栏中的灵感示例，再修改示例需求。'],
+              ['工程师和团队模式怎么选择？','简单明确的需求可以交给开发伙伴；需要先讨论方案时选择团队模式，产品伙伴会组织需求梳理、设计、开发与验收，只在必要决策时请你确认。模式在创建项目时确定，之后保持固定；每次创建都有独立的对话和代码。'],
               ['团队向我确认时，可以慢一点吗？','可以。确认卡默认给你 30 秒选择推荐方案；点击选项或填写想法会暂停倒计时，也可以点“继续思考”后再决定。选择“其他”可填写自己的方案，确认后团队会据此继续。'],
               ['刷新页面后，内容会丢吗？','首页需求草稿保留在当前浏览器，并按账号区分；创建成功后会清空。项目的对话、代码和版本保存到服务端，登录后可继续。灵感库的试用数据只保留到关闭预览。'],
               ['如何查看和分享做好的应用？','打开项目工作台，在右侧标签页查看预览、文件和工作看板。生成完成后可体验应用、继续提出修改，或使用工作台的分享功能。外部访问需要部署地址能够从公网访问，本地地址仅适用于当前电脑。'],
             ].map(([question,answer])=><details key={question} className="group py-4"><summary className="cursor-pointer text-sm font-medium focus-visible:outline-primary">{question}</summary><p className="mt-3 max-w-3xl text-sm leading-7 text-muted-foreground">{answer}</p></details>)}</div>
-          </section>
-        </main>
+          </section>}
+            </div>}
+          </main>
+        </>
       )}
 
       <AlertDialog open={!!pendingDelete} onOpenChange={(open) => !open && setPendingDelete(null)}>
