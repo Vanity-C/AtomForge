@@ -1,0 +1,35 @@
+{
+    "title": "user_settings",
+    "type": "object",
+    "description": "Per-user agent generation settings",
+    "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Primary key, autoincrement"
+        },
+        "user_id": {
+            "type": "string",
+            "description": "Owner user id"
+        },
+        "provider": {
+            "type": "string",
+            "description": "Model provider label, e.g. atoms-cloud"
+        },
+        "model": {
+            "type": "string",
+            "description": "Default text model id"
+        },
+        "temperature_pct": {
+            "type": "integer",
+            "description": "Creativity 0-100"
+        },
+        "auto_preview": {
+            "type": "boolean",
+            "description": "Auto refresh preview after generation"
+        }
+    },
+    "required": [
+        "user_id",
+        "model"
+    ]
+}

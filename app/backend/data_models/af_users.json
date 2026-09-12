@@ -1,0 +1,36 @@
+{
+    "title": "af_users",
+    "type": "object",
+    "description": "AtomForge self-hosted accounts. Passwords are stored as salted bcrypt hashes only. Email verification and password recovery are not part of this system.",
+    "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Autoincrement primary key"
+        },
+        "email": {
+            "type": "string",
+            "description": "Unique normalized lowercase email"
+        },
+        "password_hash": {
+            "type": "string",
+            "description": "Salted bcrypt password hash"
+        },
+        "display_name": {
+            "type": "string",
+            "description": "User nickname"
+        },
+        "status": {
+            "type": "string",
+            "description": "Account status: active or disabled"
+        },
+        "last_login_at": {
+            "type": "string",
+            "description": "ISO8601 UTC timestamp of last successful login"
+        }
+    },
+    "required": [
+        "email",
+        "password_hash",
+        "display_name"
+    ]
+}

@@ -1,0 +1,86 @@
+name: atomforge-production
+
+services:
+  app:
+    image: atomforge:${ATOMFORGE_VERSION:-0.1.0}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: [.env.docker]
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/atomforge.db
+      ATOMFORGE_DATA_DIR: /data
+      ENVIRONMENT: prod
+      MGX_IGNORE_MODULE_INIT: "false"
+      RUNNER_URL: http://runner:8001
+      AI_MAX_ACTIVE_RUNS: ${AI_MAX_ACTIVE_RUNS:-1}
+    volumes: [data:/data]
+    networks: [web, builds]
+    depends_on:
+      runner: {condition: service_healthy}
+    mem_limit: ${APP_MEMORY_LIMIT:-1024m}
+    memswap_limit: ${APP_SWAP_LIMIT:-1536m}
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: [CMD, python, -c, "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/database/health',timeout=5))['status']=='healthy'; urllib.request.urlopen('http://127.0.0.1:8000/',timeout=5).close()"]
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  runner:
+    image: atomforge-runner:${ATOMFORGE_VERSION:-0.1.0}
+    build:
+      context: .
+      dockerfile: app/runner/Dockerfile
+    restart: unless-stopped
+    networks: [builds]
+    mem_limit: ${RUNNER_MEMORY_LIMIT:-1536m}
+    memswap_limit: ${RUNNER_SWAP_LIMIT:-2048m}
+    cpus: 2
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      ATOMFORGE_DOMAIN: ${ATOMFORGE_DOMAIN:?Set ATOMFORGE_DOMAIN in .env.production}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      - certificates:/data
+      - caddy-config:/config
+    networks: [web]
+    depends_on:
+      app: {condition: service_healthy}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+volumes:
+  data:
+  certificates:
+  caddy-config:
+
+networks:
+  web:
+  builds:
+    internal: true

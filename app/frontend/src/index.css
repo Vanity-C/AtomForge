@@ -1,0 +1,225 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Neutrals tinted toward the brand hue (235, indigo) at 4-8% saturation */
+    --background: 235 20% 98.5%;
+    --foreground: 235 28% 13%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 235 28% 13%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 235 28% 13%;
+
+    --primary: 235 62% 42%;
+    --primary-foreground: 235 40% 99%;
+
+    --secondary: 235 18% 94.5%;
+    --secondary-foreground: 235 30% 22%;
+
+    --muted: 235 16% 95.5%;
+    --muted-foreground: 235 12% 46%;
+
+    --accent: 235 42% 93%;
+    --accent-foreground: 235 55% 32%;
+
+    --destructive: 356 68% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 158 58% 34%;
+
+    --warning: 38 92% 45%;
+    --warning-foreground: 30 65% 26%;
+
+    --border: 235 18% 90%;
+    --input: 235 18% 89%;
+    --ring: 235 62% 52%;
+
+    --radius: 0.625rem;
+
+    /* Code surfaces: light, low-glare, comfortable for long reading */
+    --code-bg: 235 30% 97.5%;
+    --code-fg: 235 30% 20%;
+    --code-gutter: 235 14% 55%;
+
+    --sidebar-background: 235 22% 97%;
+    --sidebar-foreground: 235 20% 30%;
+    --sidebar-primary: 235 62% 42%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 235 30% 93.5%;
+    --sidebar-accent-foreground: 235 50% 30%;
+    --sidebar-border: 235 18% 90%;
+    --sidebar-ring: 235 62% 52%;
+  }
+
+  .dark {
+    --background: 235 26% 9%;
+    --foreground: 235 20% 95%;
+
+    --card: 235 24% 12%;
+    --card-foreground: 235 20% 95%;
+
+    --popover: 235 24% 12%;
+    --popover-foreground: 235 20% 95%;
+
+    --primary: 235 70% 66%;
+    --primary-foreground: 235 40% 10%;
+
+    --secondary: 235 20% 16%;
+    --secondary-foreground: 235 18% 92%;
+
+    --muted: 235 18% 16%;
+    --muted-foreground: 235 14% 66%;
+
+    --accent: 235 26% 20%;
+    --accent-foreground: 235 40% 90%;
+
+    --destructive: 356 58% 48%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 158 45% 48%;
+
+    --warning: 38 88% 58%;
+    --warning-foreground: 38 60% 86%;
+
+    --border: 235 18% 20%;
+    --input: 235 18% 22%;
+    --ring: 235 60% 60%;
+
+    --code-bg: 235 24% 13%;
+    --code-fg: 235 18% 88%;
+    --code-gutter: 235 12% 55%;
+
+    --sidebar-background: 235 26% 11%;
+    --sidebar-foreground: 235 16% 88%;
+    --sidebar-primary: 235 70% 66%;
+    --sidebar-primary-foreground: 235 40% 10%;
+    --sidebar-accent: 235 22% 18%;
+    --sidebar-accent-foreground: 235 20% 92%;
+    --sidebar-border: 235 18% 20%;
+    --sidebar-ring: 235 60% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+    font-kerning: normal;
+    text-wrap: pretty;
+  }
+
+  h1 {
+    @apply text-4xl font-bold leading-tight tracking-tight;
+    text-wrap: balance;
+  }
+
+  h2 {
+    @apply text-2xl font-semibold leading-snug;
+    text-wrap: balance;
+  }
+
+  h3 {
+    @apply text-xl font-semibold;
+  }
+
+  code,
+  pre,
+  textarea.code-surface {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    font-variant-ligatures: none;
+  }
+}
+
+@layer utilities {
+  .agent-avatar .agent-wave {
+    transform-box: view-box;
+    transform-origin: 76px 76px;
+  }
+  .agent-avatar .agent-head {
+    transform-box: view-box;
+    transform-origin: 48px 61px;
+  }
+  .agent-avatar .agent-spark { opacity: 0; }
+  .agent-persona[data-greeting='true'] .agent-wave {
+    animation: agent-wave 850ms ease-in-out 2;
+  }
+  .agent-persona[data-greeting='true'] .agent-head {
+    animation: agent-nod 1100ms ease-in-out 1;
+  }
+  .agent-persona[data-greeting='true'] .agent-spark {
+    animation: agent-spark 1600ms ease-out 1;
+  }
+  @keyframes agent-wave {
+    0%, 100% { transform: rotate(0); }
+    20%, 60% { transform: rotate(-16deg); }
+    40%, 80% { transform: rotate(12deg); }
+  }
+  @keyframes agent-nod {
+    0%, 100% { transform: rotate(0); }
+    35% { transform: rotate(-5deg); }
+    70% { transform: rotate(3deg); }
+  }
+  @keyframes agent-spark {
+    0%, 100% { opacity: 0; }
+    20%, 65% { opacity: .85; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .agent-persona { transform: none !important; transition: none; }
+    .agent-persona .agent-wave,
+    .agent-persona .agent-head,
+    .agent-persona .agent-spark { animation: none !important; }
+  }
+
+  .code-surface {
+    background-color: hsl(var(--code-bg));
+    color: hsl(var(--code-fg));
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    tab-size: 2;
+  }
+
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .scroll-slim {
+    scrollbar-width: thin;
+  }
+
+  .scroll-slim::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+
+  .scroll-slim::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 9999px;
+  }
+
+  .scroll-slim::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
+
+  .grid-fade {
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.55) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.55) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 75% 60% at 50% 0%, #000 35%, transparent 78%);
+    -webkit-mask-image: radial-gradient(ellipse 75% 60% at 50% 0%, #000 35%, transparent 78%);
+  }
+}

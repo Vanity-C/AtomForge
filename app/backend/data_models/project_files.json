@@ -1,0 +1,45 @@
+{
+    "title": "project_files",
+    "type": "object",
+    "description": "Files of the generated app of a project",
+    "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Primary key, autoincrement"
+        },
+        "user_id": {
+            "type": "string",
+            "description": "Owner user id"
+        },
+        "project_id": {
+            "type": "integer",
+            "description": "Related project id"
+        },
+        "path": {
+            "type": "string",
+            "description": "File path like App.jsx or components/Header.jsx"
+        },
+        "language": {
+            "type": "string",
+            "description": "jsx | css | json | md"
+        },
+        "content": {
+            "type": "string",
+            "description": "Full file source code"
+        },
+        "version": {
+            "type": "integer",
+            "description": "Version number this file content belongs to"
+        },
+        "is_deleted": {
+            "type": "boolean",
+            "description": "Soft delete flag"
+        }
+    },
+    "required": [
+        "user_id",
+        "project_id",
+        "path",
+        "content"
+    ]
+}

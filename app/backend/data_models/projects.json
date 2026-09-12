@@ -1,0 +1,60 @@
+{
+    "title": "projects",
+    "type": "object",
+    "description": "User AI-generated app projects",
+    "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Primary key, autoincrement"
+        },
+        "user_id": {
+            "type": "string",
+            "description": "Owner user id"
+        },
+        "name": {
+            "type": "string",
+            "description": "Project name"
+        },
+        "description": {
+            "type": "string",
+            "description": "Short description of the project"
+        },
+        "initial_prompt": {
+            "type": "string",
+            "description": "The first user prompt that created this project"
+        },
+        "template": {
+            "type": "string",
+            "description": "Template kind, e.g. react-spa"
+        },
+        "status": {
+            "type": "string",
+            "description": "draft | generating | ready | error"
+        },
+        "current_version": {
+            "type": "integer",
+            "description": "Current version number"
+        },
+        "entry_file": {
+            "type": "string",
+            "description": "Entry file path, e.g. App.jsx"
+        },
+        "share_slug": {
+            "type": "string",
+            "description": "Public share slug, empty if not shared"
+        },
+        "is_public": {
+            "type": "boolean",
+            "description": "Whether public read-only share is enabled"
+        },
+        "view_count": {
+            "type": "integer",
+            "description": "Public view count"
+        }
+    },
+    "required": [
+        "user_id",
+        "name",
+        "status"
+    ]
+}

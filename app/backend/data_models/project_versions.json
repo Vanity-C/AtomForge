@@ -1,0 +1,45 @@
+{
+    "title": "project_versions",
+    "type": "object",
+    "description": "Version snapshots of a project for rollback",
+    "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Primary key, autoincrement"
+        },
+        "user_id": {
+            "type": "string",
+            "description": "Owner user id"
+        },
+        "project_id": {
+            "type": "integer",
+            "description": "Related project id"
+        },
+        "version": {
+            "type": "integer",
+            "description": "Version number, incremental"
+        },
+        "summary": {
+            "type": "string",
+            "description": "What changed in this version"
+        },
+        "prompt": {
+            "type": "string",
+            "description": "User prompt that produced this version"
+        },
+        "files_snapshot": {
+            "type": "string",
+            "description": "JSON string array of {path,language,content}"
+        },
+        "source": {
+            "type": "string",
+            "description": "agent | manual_edit | rollback"
+        }
+    },
+    "required": [
+        "user_id",
+        "project_id",
+        "version",
+        "files_snapshot"
+    ]
+}

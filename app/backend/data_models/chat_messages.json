@@ -1,0 +1,49 @@
+{
+    "title": "chat_messages",
+    "type": "object",
+    "description": "Agent conversation messages within a project session",
+    "properties": {
+        "id": {
+            "type": "integer",
+            "description": "Primary key, autoincrement"
+        },
+        "user_id": {
+            "type": "string",
+            "description": "Owner user id"
+        },
+        "project_id": {
+            "type": "integer",
+            "description": "Related project id"
+        },
+        "role": {
+            "type": "string",
+            "description": "user | assistant | system"
+        },
+        "content": {
+            "type": "string",
+            "description": "Message text content"
+        },
+        "phase": {
+            "type": "string",
+            "description": "plan | code | done | error"
+        },
+        "version": {
+            "type": "integer",
+            "description": "Version produced by this message, 0 if none"
+        },
+        "model": {
+            "type": "string",
+            "description": "Model used for this message"
+        },
+        "token_estimate": {
+            "type": "integer",
+            "description": "Rough token estimate"
+        }
+    },
+    "required": [
+        "user_id",
+        "project_id",
+        "role",
+        "content"
+    ]
+}
