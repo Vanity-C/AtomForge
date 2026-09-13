@@ -3,7 +3,7 @@ import Markdown from 'markdown-to-jsx';
 import {toast} from 'sonner';
 import AgentPersona from './AgentPersona';
 import {Button} from '@/components/ui/button';
-import {useTeam} from './AgentProvider';
+import {useAgentTeam} from './AgentProvider';
 import {FALLBACK_TEAM} from '@/lib/agentProfiles';
 import type {ConversationMessage, ConversationReply, ConversationStep} from '@/lib/conversation';
 import {currentOutputFiles} from '@/lib/conversation';
@@ -57,9 +57,9 @@ export default function AgentReply({reply, active, waiting, expanded, onToggle, 
   filePaths: string[]; onOpenFile: (path:string)=>void;
 }) {
   const first = reply.messages[0];
-  const TEAM_ROLES=useTeam(first.team||FALLBACK_TEAM);
-  const person=first.detail.agent||TEAM_ROLES.find(r=>r.id===reply.sender)?.profile;
-  const roleName=(role:string)=>role==='user'?'你':role==='all'?'团队':(role===reply.sender?person?.title:TEAM_ROLES.find(r=>r.id===role)?.alias)||role;
+  const team=useAgentTeam(first.team||FALLBACK_TEAM);
+  const person=first.detail.agent||reply.messages.find(message=>message.detail.agent)?.detail.agent||team[reply.sender];
+  const roleName=(role:string)=>role==='user'?'你':role==='all'?'团队':(role===reply.sender?person?.title:team[role]?.name)||(role.startsWith('member:')?'智能体':role);
   const date = new Date(first.created);
   const failed = reply.steps.filter(s => s.message.kind === 'error' || (s.result || s.message).detail.state === 'error').length;
   if (reply.sender === 'user') return <article aria-label="你的消息" className="ml-8 flex justify-end py-2">
@@ -67,7 +67,7 @@ export default function AgentReply({reply, active, waiting, expanded, onToggle, 
   </article>;
   return <article aria-label={`${roleName(reply.sender)}的回复`} className="min-w-0 py-2">
     <header className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-      <AgentPersona role={reply.sender} profile={person} avatarClassName="h-9 w-9"/>
+      {person?<AgentPersona role={reply.sender} profile={person} avatarClassName="h-9 w-9"/>:<span aria-hidden="true" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm">?</span>}
       <span className="font-medium text-foreground">{person?.name || roleName(reply.sender)}</span>
       <span className="text-muted-foreground/40">|</span><span>{roleName(reply.sender)}</span>
       {!Number.isNaN(date.getTime()) && <time className="ml-auto text-[10px]" dateTime={first.created}>{date.toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', hour12: false})}</time>}

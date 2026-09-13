@@ -1,7 +1,7 @@
 import {useId} from 'react';
-import {TEAM_ROLES} from '@/lib/studio';
 import {useAgents} from './AgentProvider';
-import type {AgentProfile} from '@/lib/agentProfiles';
+import {FALLBACK_TEAM,type AgentProfile} from '@/lib/agentProfiles';
+import AgentIntroduction from './AgentIntroduction';
 
 const palettes:Record<string,{bg:string;coat:string;ink:string;shell:string}>={
   leader:{bg:'#f3efff',coat:'#a18aca',ink:'#655183',shell:'#d7c9ef'},
@@ -13,16 +13,15 @@ const palettes:Record<string,{bg:string;coat:string;ink:string;shell:string}>={
 };
 
 /** Original egg companions: one shell silhouette, five profession-specific toolkits. */
-export default function AgentAvatar({role:requestedRole,className='h-9 w-9',person}:{role:string;className?:string;person?:AgentProfile}){
+export default function AgentAvatar({role:requestedRole,className='h-9 w-9',person,showIntroduction=true}:{role:string;className?:string;person?:AgentProfile;showIntroduction?:boolean}){
   const id=useId().replace(/:/g,'');
   const {team}=useAgents();
-  const profile=person||team[requestedRole];
+  const profile=person||team[requestedRole]||FALLBACK_TEAM[requestedRole]||FALLBACK_TEAM.engineer;
   const style=profile?.avatar_style||requestedRole;
   const role=palettes[style]?style:'engineer';
   const p=palettes[role];
-  const name=profile?.name||TEAM_ROLES.find(r=>r.id===role)!.alias;
-  if(profile?.avatar)return <img src={profile.avatar} alt={`${name}的头像`} className={`shrink-0 rounded-full object-cover ${className}`}/>;
-  return <svg viewBox="0 0 96 96" role="img" aria-label={`${name}的蛋形头像`} className={`agent-avatar shrink-0 overflow-visible ${className}`}>
+  const name=profile.name;
+  const portrait=profile.avatar?<img data-agent-avatar={profile.id} src={profile.avatar} alt={`${name}的头像`} className={`shrink-0 rounded-full object-cover ${className}`}/>:<svg data-agent-avatar={profile.id} viewBox="0 0 96 96" role="img" aria-label={`${name}的蛋形头像`} className={`agent-avatar shrink-0 overflow-visible ${className}`}>
     <defs>
       <radialGradient id={id} cx="30%" cy="20%" r="85%"><stop stopColor="#fff"/><stop offset="1" stopColor={p.bg}/></radialGradient>
       <radialGradient id={`${id}-shell`} cx="32%" cy="24%" r="80%"><stop stopColor="#fffdf4"/><stop offset=".5" stopColor={p.bg}/><stop offset="1" stopColor={p.shell}/></radialGradient>
@@ -54,4 +53,5 @@ export default function AgentAvatar({role:requestedRole,className='h-9 w-9',pers
     {role==='qa'&&<><rect x="23" y="68" width="27" height="24" rx="2" fill="#f6ffed" stroke={p.ink} strokeWidth="1.5"/><path d="m27 75 2 2 4-4m3 2h9m-18 8 2 2 4-4m3 2h9" fill="none" stroke={p.coat} strokeWidth="1.8" strokeLinecap="round"/><path d="m62 79 6 10" stroke={p.ink} strokeWidth="5" strokeLinecap="round"/><circle cx="58" cy="73" r="10" fill="#ecffff" fillOpacity=".9" stroke={p.ink} strokeWidth="3"/><path d="m53 73 3 3 6-7" fill="none" stroke={p.coat} strokeWidth="2" strokeLinecap="round"/></>}
     <g className="agent-spark" fill={p.coat}><path d="m12 36 2-5 2 5 5 2-5 2-2 5-2-5-5-2Z"/><circle cx="82" cy="21" r="2.5"/></g>
   </svg>;
+  return showIntroduction?<AgentIntroduction person={profile} followParent>{portrait}</AgentIntroduction>:portrait;
 }

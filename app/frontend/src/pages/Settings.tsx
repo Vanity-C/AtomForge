@@ -13,7 +13,8 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { Skeleton } from '@/components/ui/skeleton';
-import { LoginGate, TopBar, useAuth } from '@/components/AppShell';
+import { LoginGate, useAuth } from '@/components/AppShell';
+import WorkspaceShell from '@/components/WorkspaceShell';
 import { errorMessage } from '@/lib/sdk';
 import { loadProfile, saveProfile } from '@/lib/projectStore';
 import {
@@ -66,22 +67,21 @@ export default function Settings() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
-      <TopBar authState={authState} user={user} brandTo="/dashboard" />
+    <WorkspaceShell authState={authState} user={user} title="生成设置">
 
       {authState === 'loading' ? (
-        <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6">
+        <div className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6">
           <Skeleton className="h-8 w-40" />
           <Skeleton className="mt-6 h-20 w-full" />
           <Skeleton className="mt-6 h-40 w-full" />
-        </main>
+        </div>
       ) : authState === 'anonymous' ? (
         <LoginGate
           title="登录后可配置生成模型"
           description="生成设置会保存在你的 AtomForge 账号下，登录后即可修改。"
         />
       ) : (
-        <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6">
+        <div className="mx-auto w-full max-w-3xl flex-1 px-4 py-10 sm:px-6">
           <h1 className="text-2xl font-bold tracking-tight">生成设置</h1>
           <Link to="/agents" className="mt-3 inline-block text-sm text-primary hover:underline">管理智能体 · 定制头像、性格与职责 →</Link>
           <p className="mt-2 text-sm text-muted-foreground">
@@ -202,8 +202,8 @@ export default function Settings() {
             </Button>
           </div>
           <UsagePanel/>
-        </main>
+        </div>
       )}
-    </div>
+    </WorkspaceShell>
   );
 }

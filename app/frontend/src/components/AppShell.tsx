@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Atom, LayoutGrid, LogOut, Settings2, User, Users } from 'lucide-react';
+import { Atom, LogOut, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import AccountAvatar from '@/components/AccountAvatar';
 import {
@@ -130,6 +130,7 @@ export function TopBar({ authState, user, center, right, brandTo = '/' }: TopBar
 
 export function AccountMenu({user}: {user?: AfUser | null}) {
   const navigate = useNavigate();
+  const location = useLocation();
   const handleSignOut = async () => {
     await signOut();
     navigate('/', { replace: true });
@@ -137,7 +138,7 @@ export function AccountMenu({user}: {user?: AfUser | null}) {
   return (
 <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="h-9 max-w-40 gap-2 rounded-full px-1.5 sm:pr-3" aria-label="账户菜单">
+              <Button variant="ghost" className="h-9 max-w-40 gap-2 rounded-full px-1.5 sm:pr-3" aria-label="账户菜单" aria-current={location.pathname === '/account' ? 'page' : undefined}>
                 <AccountAvatar src={user?.avatar_url} name={user?.username || user?.display_name || '我'} className="h-7 w-7"/>
                 <span className="max-w-20 truncate text-xs sm:max-w-28">{user?.username || user?.display_name}</span>
               </Button>
@@ -154,17 +155,6 @@ export function AccountMenu({user}: {user?: AfUser | null}) {
               <DropdownMenuItem onClick={() => navigate('/account')}>
                 <User className="mr-2 h-4 w-4" />
                 个人中心
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/dashboard?view=projects')}>
-                <LayoutGrid className="mr-2 h-4 w-4" />
-                我的项目
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/settings')}>
-                <Settings2 className="mr-2 h-4 w-4" />
-                生成设置
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate('/agents')}>
-                <Users className="mr-2 h-4 w-4" />智能体管理
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={handleSignOut}>

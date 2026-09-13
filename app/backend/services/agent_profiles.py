@@ -20,6 +20,47 @@ _DEFAULTS = [
 DEFAULT_AGENTS = [dict(id='default-'+role,role=role,name=name,title=title,responsibilities=task,
                        personality=personality,greeting=greeting,avatar='',avatar_style=role)
                   for role,name,title,task,personality,greeting in _DEFAULTS]
+DEFAULT_TEAM_ID = 'default-team'
+MEMBER_PREFIX = 'member:'
+
+
+def default_group():
+    return {'id': DEFAULT_TEAM_ID, 'name': '默认团队',
+            'description': '六位默契伙伴，从想法到交付全程协作。', 'color': 'sage',
+            'member_ids': [a['id'] for a in DEFAULT_AGENTS]}
+
+
+def stage_assignments(members):
+    """Prefer expertise, then share uncovered stages among the selected roster."""
+    assigned = {}
+    loads = {a['id']: 0 for a in members}
+    for role in ROLE_IDS:
+        match = next((a for a in members if a['role'] == role), None)
+        if match:
+            assigned[role] = match['id']
+            loads[match['id']] += 1
+    for role in ROLE_IDS:
+        if role not in assigned:
+            person = min(members, key=lambda a: loads[a['id']])
+            assigned[role] = person['id']
+            loads[person['id']] += 1
+    return {role: assigned[role] for role in ROLE_IDS}
+
+
+def migrate_groups(value):
+    value = deepcopy(value)
+    if value.get('teams') is not None:
+        return value
+    group = default_group()
+    value['teams'] = [group]
+    value['active_team_id'] = DEFAULT_TEAM_ID
+    previous = value.get('active', {})
+    if previous and previous != {r: 'default-' + r for r in ROLE_IDS}:
+        value['teams'].append({'id': 'preserved-team', 'name': '我的原团队',
+            'description': '保留升级前的成员安排。', 'color': 'sky',
+            'member_ids': list(dict.fromkeys(previous[r] for r in ROLE_IDS))})
+        value['active_team_id'] = 'preserved-team'
+    return value
 
 
 class AgentProfile(BaseModel):
@@ -35,11 +76,44 @@ class AgentProfile(BaseModel):
     avatar_style: Role = 'engineer'
 
 
+class AgentGroup(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    id: str = Field(min_length=1, max_length=80, pattern=r'^[a-zA-Z0-9_-]+$')
+    name: str = Field(min_length=1, max_length=60)
+    description: str = Field(default='', max_length=300)
+    color: Literal['sage', 'sky', 'violet', 'amber', 'rose', 'slate'] = 'sage'
+    member_ids: list[str] = Field(min_length=1, max_length=12)
+
+
 class AgentConfiguration(BaseModel):
     model_config = ConfigDict(extra='forbid')
     agents: list[AgentProfile] = Field(min_length=6,max_length=24)
     active: dict[Role,str]
     revision: int = Field(default=0,ge=0)
+    teams: list[AgentGroup] = Field(min_length=1, max_length=12)
+    active_team_id: str = DEFAULT_TEAM_ID
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_legacy(cls, value):
+        if isinstance(value, dict) and value.get('teams') is None:
+            # Old clients still send role assignments; reject invalid references
+            # before transforming them into the new roster representation.
+            raw_agents = value.get('agents')
+            active = value.get('active')
+            if (not isinstance(raw_agents, list) or not isinstance(active, dict)
+                    or any(not isinstance(a, dict) or not isinstance(a.get('id'), str)
+                           or not isinstance(a.get('role'), str) for a in raw_agents)
+                    or any(not isinstance(k, str) or not isinstance(v, str) for k, v in active.items())):
+                raise ValueError('智能体与团队配置格式无效')
+            agents = {a['id']: a for a in raw_agents}
+            if set(active) != set(ROLE_IDS):
+                raise ValueError('六个协作岗位都需要安排成员')
+            for role, agent_id in active.items():
+                if agent_id not in agents or agents[agent_id]['role'] != role:
+                    raise ValueError('成员与协作岗位不匹配')
+            return migrate_groups(value)
+        return value
 
     @model_validator(mode='after')
     def valid_team(self):
@@ -47,17 +121,25 @@ class AgentConfiguration(BaseModel):
         if len(agents)!=len(self.agents):raise ValueError('智能体 ID 不能重复')
         if any(key.startswith('default-') and key not in {'default-'+r for r in ROLE_IDS} for key in agents):
             raise ValueError('自建智能体不能使用默认成员的保留 ID')
-        if set(self.active)!=set(ROLE_IDS):raise ValueError('六个协作岗位都需要安排成员')
         for role in ROLE_IDS:
             if 'default-'+role not in agents or agents['default-'+role].role!=role:
                 raise ValueError('请保留默认智能体及其岗位，可修改资料或恢复默认')
-            selected=agents.get(self.active[role])
-            if not selected or selected.role!=role:raise ValueError('成员与协作岗位不匹配')
+        groups = {group.id: group for group in self.teams}
+        if len(groups) != len(self.teams):raise ValueError('团队 ID 不能重复')
+        if DEFAULT_TEAM_ID not in groups:
+            raise ValueError('请保留默认团队；其成员可以自由调整')
+        for group in self.teams:
+            if len(set(group.member_ids)) != len(group.member_ids):raise ValueError('团队成员不能重复')
+            if any(member not in agents for member in group.member_ids):
+                raise ValueError('智能体仍被团队引用，请先从团队中移除后再删除')
+        if self.active_team_id not in groups:raise ValueError('当前团队不存在，请选择一个团队')
+        self.active = stage_assignments([agents[mid].model_dump() for mid in groups[self.active_team_id].member_ids])
         return self
 
 
 def defaults():
-    return {'agents':deepcopy(DEFAULT_AGENTS),'active':{r:'default-'+r for r in ROLE_IDS},'revision':0}
+    return {'agents':deepcopy(DEFAULT_AGENTS),'active':{r:'default-'+r for r in ROLE_IDS},'revision':0,
+            'teams': [default_group()], 'active_team_id': DEFAULT_TEAM_ID}
 
 
 async def configuration(owner, db=None):
@@ -70,11 +152,13 @@ async def configuration(owner, db=None):
     if not any(a['id']=='default-leader' for a in value['agents']):
         value['agents'].append(deepcopy(DEFAULT_AGENTS[-1]))
     value['active'].setdefault('leader','default-leader')
-    return value
+    return AgentConfiguration.model_validate(migrate_groups(value)).model_dump()
 
 
 def complete_team(team):
     """Legacy run snapshots keep their members; only supply the newly introduced role."""
+    if any(key.startswith(MEMBER_PREFIX) for key in (team or {})):
+        return deepcopy(team)
     return {'leader':deepcopy(DEFAULT_AGENTS[-1]),**(team or {})}
 
 
@@ -84,7 +168,25 @@ def legacy_team():
 
 def active_team(config):
     agents={a['id']:a for a in config['agents']}
-    return {role:deepcopy(agents[agent_id]) for role,agent_id in config['active'].items()}
+    config = migrate_groups(config)
+    group = next(t for t in config['teams'] if t['id'] == config['active_team_id'])
+    members = [agents[mid] for mid in group['member_ids']]
+    stages = stage_assignments(members)
+    return {**{role: deepcopy(agents[mid]) for role, mid in stages.items()},
+            **{MEMBER_PREFIX + a['id']: deepcopy(a) for a in members}}
+
+
+def roster(team):
+    """Return the ordered real members, including specialists sharing a role."""
+    selected = [p for key, p in team.items() if key.startswith(MEMBER_PREFIX)]
+    return selected or list({p['id']: p for p in team.values()}.values())
+
+
+def resolve_member(team, target):
+    if target in team:return team[target]
+    if target.startswith(MEMBER_PREFIX):
+        return next((a for a in roster(team) if MEMBER_PREFIX + a['id'] == target), None)
+    return None
 
 
 async def snapshot(owner, db=None):
@@ -95,11 +197,13 @@ def prompt_for(role, team):
     team=complete_team(team)
     person=team[role]
     public={k:person[k] for k in ('name','title','personality','responsibilities','greeting')}
-    peers=[{'role':r,'name':p['name'],'title':p['title'],'responsibilities':p['responsibilities']}
-           for r,p in team.items() if r!=role]
+    peers=[{k:p[k] for k in ('id','role','name','title','responsibilities')}
+           for p in roster(team) if p['id'] != person['id']]
+    assignments = {r: team[r]['name'] for r in ROLE_IDS if r in team}
     next_role={'leader':'product','product':'leader','design':'leader','architect':'leader','engineer':'leader','qa':'leader'}[role]
     return ('\n你的身份与表达方式使用以下专属智能体配置：'+json.dumps(public,ensure_ascii=False)+
             '\n实际协作成员：'+json.dumps(peers,ensure_ascii=False)+
+            '\n本轮阶段负责人（同一位成员可承担多个阶段）：'+json.dumps(assignments,ensure_ascii=False)+
             ('\n你负责制定调度单、协调专业成员，并向用户说明进展和结果。' if role=='leader' else '\n工作安排以团队领导的调度单为准。阶段完成或出现问题，向'+team[next_role]['name']+'汇报。')+'测试结论必须独立，不允许领导跳过验收。'+
             '\n将性格体现在措辞、关注点和协作方式中，不要每次复述人设或开场白。用自然的第一人称，简洁、具体，适度表达关切。'
             '回应真实的前序交接与讨论：指出承接了谁的哪项决定、自己的判断，以及接下来需要谁做什么。'

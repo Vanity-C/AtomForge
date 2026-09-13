@@ -315,6 +315,32 @@ def test_verification_rejects_untrusted_or_local_destinations():
     for value in ['http://localhost','https://netlify.app.attacker.test','https://x.netlify.app@127.0.0.1','https://x.netlify.app:9999']:
         with pytest.raises(Exception):deploying.netlify_url(value)
 
+@pytest.mark.parametrize('status,message',[(401,'需要登录或密码'),(403,'访问保护或防火墙')])
+def test_public_verification_reports_access_protection_without_retry(status,message):
+    from fastapi import HTTPException
+    transport=httpx.MockTransport(lambda request:httpx.Response(status,text='<title>Login Redirect</title>'))
+    real_client=httpx.AsyncClient
+    with patch('services.deploying.httpx.AsyncClient',side_effect=lambda **kwargs:real_client(transport=transport,**kwargs)),patch('services.deploying.asyncio.sleep',new=AsyncMock()) as sleep:
+        with pytest.raises(HTTPException,match=message):
+            asyncio.run(deploying.verify_public('https://app.netlify.app','marker'))
+    sleep.assert_not_awaited()
+
+def test_public_verification_retries_transient_response_and_requires_current_version():
+    responses=iter([httpx.Response(503),httpx.Response(200,text='<meta content="old-marker">'),httpx.Response(200,text='<meta content="marker">')])
+    transport=httpx.MockTransport(lambda request:next(responses))
+    real_client=httpx.AsyncClient
+    with patch('services.deploying.httpx.AsyncClient',side_effect=lambda **kwargs:real_client(transport=transport,**kwargs)),patch('services.deploying.asyncio.sleep',new=AsyncMock()) as sleep:
+        asyncio.run(deploying.verify_public('https://app.netlify.app','marker'))
+    assert sleep.await_count==2
+
+def test_public_verification_rejects_wrong_version_with_actionable_error():
+    from fastapi import HTTPException
+    transport=httpx.MockTransport(lambda request:httpx.Response(200,text='<meta content="old-marker">'))
+    real_client=httpx.AsyncClient
+    with patch('services.deploying.httpx.AsyncClient',side_effect=lambda **kwargs:real_client(transport=transport,**kwargs)),patch('services.deploying.asyncio.sleep',new=AsyncMock()):
+        with pytest.raises(HTTPException,match='不是本次部署版本'):
+            asyncio.run(deploying.verify_public('https://app.netlify.app','marker'))
+
 def test_new_netlify_deployment_is_a_draft_and_uploads_only_missing_files():
     import hashlib
     calls=[]
@@ -324,7 +350,8 @@ def test_new_netlify_deployment_is_a_draft_and_uploads_only_missing_files():
         if path=='/sites' or path=='/sites/site1':return {'id':'site1','name':'app'}
         if path=='/sites/site1/deploys':
             assert kwargs['json']['draft'] is True
-            assert kwargs['json']['files']['app.js']==hashlib.sha1(b'compiled-app').hexdigest()
+            assert kwargs['json']['files']['/app.js']==hashlib.sha1(b'compiled-app').hexdigest()
+            assert all(path.startswith('/') for path in kwargs['json']['files'])
             return {'id':'deploy1','state':'uploading','required':[hashlib.sha1(b'compiled-app').hexdigest()]}
         return {'state':'ready','deploy_ssl_url':'https://deploy1--app.netlify.app'}
     put=AsyncMock(return_value=httpx.Response(200))

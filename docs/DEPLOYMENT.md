@@ -21,7 +21,7 @@ cp .env.production.example .env.production
 chmod 600 .env.docker .env.production
 ```
 
-在服务器编辑 `.env.docker`，设置 `APP_AI_KEY`。不要将密钥提交 Git 或填写到前端配置。编辑 `.env.production`，设置 `ATOMFORGE_DOMAIN` 为实际域名（不带协议和路径）。然后运行：
+在服务器编辑 `.env.docker`：使用 DeepSeek 时设置 `APP_AI_KEY`；只使用 GPT/Codex 时可留空，并在启动后按下文登录 ChatGPT。不要将密钥提交 Git 或填写到前端配置。编辑 `.env.production`，设置 `ATOMFORGE_DOMAIN` 为实际域名（不带协议和路径）。然后运行：
 
 ```bash
 bash deploy/start.sh
@@ -32,6 +32,56 @@ bash deploy/start.sh
 若主机曾使用 `podman-docker`，安装 Docker Engine 后还应检查 `DOCKER_HOST` 是否仍指向 Podman socket。确认本机 Docker Engine 已启动后，在当前维护终端执行 `export DOCKER_HOST=unix:///var/run/docker.sock`，再运行上述脚本；保留原 Podman 数据和其他服务。
 
 Caddy 的证书自动签发/续期依赖正确解析、开放端口与持久化证书目录，见 [Caddy 官方说明](https://caddyserver.com/docs/automatic-https)。Compose 单机部署方式参见 [Docker 官方说明](https://docs.docker.com/compose/how-tos/production/)。
+
+## 接入 Codex 账号额度
+
+Dockerfile 固定安装 Codex CLI `0.153.0` 的原生程序，生产配置将 `CODEX_HOME` 设为 `/data/codex`，沿用 `atomforge-production_data` 数据卷。启动时应用用户（UID `10001`）会创建该目录并设置 `0700` 权限，已有数据卷升级时也适用。服务器不会自动继承个人电脑的 Codex 登录；凭据在登录后由 CLI 自行保存和刷新。
+
+已有部署先执行备份，确认没有运行中的生成或发布任务，再更新到包含该 Dockerfile 的代码或镜像。若在服务器构建，只需重建并更新应用：
+
+```bash
+bash deploy/backup.sh
+docker compose --env-file .env.production -f compose.production.yaml build app
+docker compose --env-file .env.production -f compose.production.yaml up -d --no-deps --no-build --wait app
+```
+
+小内存服务器按下文在其他机器构建、传输并加载新应用镜像，再执行上述 `up` 命令。保留已有 `data` 卷，不要执行 `down -v`；正常重建容器不需要重新登录。
+
+在个人 ChatGPT 账号的安全设置启用设备码登录；工作区账号由管理员在工作区权限中启用。应用启动后，在服务器仓库目录执行：
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml exec app codex --version
+docker compose --env-file .env.production -f compose.production.yaml exec app codex login --device-auth
+```
+
+打开终端给出的链接，用自己的浏览器登录 ChatGPT 并输入一次性代码。授权成功后检查：
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml exec app codex login status
+```
+
+确认显示 ChatGPT 登录后，在 AtomForge「生成设置」刷新模型列表，选择 GPT 模型并保存，然后生成一个小型应用验证。模型列表缓存 60 秒，刚登录仍显示不可用时，等待缓存到期再刷新。若授权被撤销或状态提示未登录，重新执行设备码登录。参考 [官方认证与设备码登录说明](https://learn.chatgpt.com/docs/auth)。
+
+如果找不到设备码登录开关，可使用普通浏览器授权和临时 SSH 隧道。在将要打开浏览器的同一台电脑执行，并保持连接：
+
+```bash
+ssh -L 127.0.0.1:1455:127.0.0.1:1455 user@server
+```
+
+若本机 IPv4 监听被拒绝，将转发参数换为 `-L '[::1]:1455:127.0.0.1:1455'`。在该 SSH 会话中，用当前生产应用镜像启动临时登录容器：
+
+```bash
+docker run --rm -it --network host \
+  --security-opt no-new-privileges:true --cap-drop ALL \
+  --mount type=volume,source=atomforge-production_data,target=/data \
+  --entrypoint /usr/local/bin/codex atomforge:0.2.0 login
+```
+
+示例卷名对应默认生产项目；自定义项目名时替换为实际应用数据卷，镜像标签也应与当前生产应用一致。临时容器沿用镜像的 `CODEX_HOME=/data/codex` 和应用用户，登录后直接共用持久化状态。在建立隧道的电脑浏览器打开 CLI 输出的授权链接；成功后退出 SSH 关闭隧道，登录容器退出后会自动移除，再用上面的 `login status` 检查。此流程不发布公网端口。参考 [官方 SSH 回调转发备用流程](https://learn.chatgpt.com/docs/auth#fallback-forward-the-localhost-callback-over-ssh)。
+
+GPT 调用使用服务器上登录账号的 Codex 额度；所有网站用户选择 GPT 都会共用该账号，当前没有逐用户绑定 Codex 账号。当前接入拒绝 API Key 登录，也不会将 GPT 调用回退到 API 计费。该方式适用于受信任的个人部署；官方推荐自动化默认使用 API Key，并要求避免在不受信任或公开环境暴露 Codex 执行能力，见 [非交互调用说明](https://learn.chatgpt.com/docs/non-interactive-mode) 与 [认证说明](https://learn.chatgpt.com/docs/auth)。
+
+本节是部署操作流程；需在目标服务器完成登录和生成验证，才能确认该生产实例已接通账号。本机与隔离容器的检查不代表生产验证完成。
 
 ## 小内存服务器
 
@@ -71,7 +121,7 @@ docker compose --env-file .env.production -f compose.production.yaml logs --tail
 bash deploy/backup.sh
 ```
 
-备份使用 SQLite online backup API，并执行完整性检查，输出到私有 `backups/`。下载到受控异地位置；该目录不进入 Git。`.env.docker`、`.env.production` 另行安全备份。可由服务器自身的调度系统每天执行备份脚本，保留周期根据磁盘和评审周期设置；脚本本身不删除历史备份。
+备份使用 SQLite online backup API，并执行完整性检查，输出到私有 `backups/`。下载到受控异地位置；该目录不进入 Git。`.env.docker`、`.env.production` 另行安全备份。`deploy/backup.sh` 不打包 `/data/codex` 中的 Codex 登录状态；在新数据卷恢复数据库和密钥后，需要重新执行设备码登录。不要将 Codex 凭据复制到仓库、镜像或公开日志。可由服务器自身的调度系统每天执行备份脚本，保留周期根据磁盘和评审周期设置；脚本本身不删除历史备份。
 
 ## 升级与回退
 

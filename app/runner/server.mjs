@@ -118,7 +118,7 @@ export async function compile(files) {
 
 export const MAX_TEST_STEPS = 48;
 export class RunnerEnvironmentError extends Error {}
-export async function check(artifact, steps=[]) {
+export async function check(artifact, steps=[], {capture=false}={}) {
   if (!Array.isArray(steps)) throw Error('测试协议错误：tests 必须是步骤数组');
   if (steps.length > MAX_TEST_STEPS) throw Error(`测试协议错误：提交了 ${steps.length} 步，单次最多支持 ${MAX_TEST_STEPS} 步。请精简重复测试，保留核心流程；此错误不代表应用代码有问题。`);
   for (const [index, step] of steps.entries()) {
@@ -139,6 +139,7 @@ export async function check(artifact, steps=[]) {
     // Generated code gets a clean browser context: no secrets, workspace login,
     // host volumes, external requests or access to the backend network.
     await context.route('**/*', route=>route.abort());
+    await context.routeWebSocket('**/*', socket=>socket.close());
     const page=await context.newPage(); page.setDefaultTimeout(2500);
     page.on('pageerror',e=>errors.push(e.message.slice(0,1500)));
     page.on('console',m=>{if(logs.length<60) logs.push(m.type()+': '+m.text().slice(0,1000));});
@@ -162,6 +163,19 @@ export async function check(artifact, steps=[]) {
     if(artifact.css)await page.addStyleTag({content:artifact.css});
     await page.addScriptTag({content:artifact.js});
     await page.waitForFunction(()=>document.getElementById('root')?.childElementCount > 0,{},{timeout:5000});
+    // Capture the initial application, before interaction tests change its state.
+    // It shares the isolated browser and never contacts production cloud data.
+    let thumbnail;
+    if(capture) {
+      try {
+        await page.waitForTimeout(300);
+        await page.evaluate(()=>document.fonts.ready);
+        thumbnail='data:image/jpeg;base64,'+(await page.screenshot({type:'jpeg',quality:72,animations:'disabled',timeout:5000})).toString('base64');
+      } catch {
+        // A cover is optional; it must never turn valid code into a failed build.
+        logs.push('WARN 应用预览图暂未生成，可稍后重新获取');
+      }
+    }
     for (const [index, step] of steps.entries()) {
       if (typeof step.selector!=='string' || step.selector.length>300) throw Error('测试需要有效的 CSS selector');
       const target=page.locator(step.selector).first();
@@ -186,7 +200,7 @@ export async function check(artifact, steps=[]) {
     if(errors.length) throw Error(errors.join('\n'));
     logs.push('PASS 页面挂载与运行错误检查；云端接口使用测试替身');
     const audit=await page.evaluate(()=>({title:document.title,h1:[...document.querySelectorAll('h1')].map(x=>x.textContent?.slice(0,200)),images:document.images.length,missingAlt:[...document.images].filter(x=>!x.hasAttribute('alt')).length,emptyLinks:[...document.querySelectorAll('a')].filter(x=>!x.textContent?.trim()&&!x.getAttribute('aria-label')).length,description:document.querySelector('meta[name="description"]')?.getAttribute('content')||''}));
-    return {ok:true,logs,audit};
+    return {ok:true,logs,audit,...(thumbnail?{thumbnail}: {})};
   } catch(e) {return {ok:false,logs,error:timedOut?'交互测试超过 60 秒，请检查等待中的操作或精简重复测试。':String(e.message).slice(0,5000)};}
   finally {clearTimeout(deadline);await browser.close();}
 }
@@ -196,13 +210,21 @@ let readyAt=0;
 let readiness;
 export async function ready() {
   if(Date.now()-readyAt<15000)return {status:'ready'};
+  // A health probe must not start a second Chromium beside a build/cover job.
+  // A running job can keep using the last successful browser readiness proof.
+  if(active) {
+    if(readyAt)return {status:'ready'};
+    if(readiness)return readiness;
+    throw new RunnerEnvironmentError('验证服务正在准备');
+  }
+  active=true;
   if(!readiness)readiness=(async()=>{
     const artifact=await compile([{path:'App.jsx',content:'export default function App(){return <h1>runner-ready</h1>}'}]);
     const result=await check(artifact,[{action:'text',selector:'h1',value:'runner-ready'}]);
     if(!result.ok)throw new RunnerEnvironmentError(result.error);
     readyAt=Date.now();
     return {status:'ready'};
-  })().finally(()=>{readiness=undefined;});
+  })().finally(()=>{readiness=undefined;active=false;});
   return readiness;
 }
 const server=http.createServer(async(req,res)=>{
@@ -212,17 +234,23 @@ const server=http.createServer(async(req,res)=>{
     try {return reply(200,await ready());}
     catch(error) {console.error('Runner readiness:',error.message);return reply(503,{code:'runner_unavailable',error:'构建或验证浏览器未就绪'});}
   }
-  if(req.url!=='/build' || req.method!=='POST') return reply(404,{error:'Not found'});
+  if(!['/build','/thumbnail'].includes(req.url) || req.method!=='POST') return reply(404,{error:'Not found'});
   if(active) return reply(429,{error:'构建服务忙，请稍后重试'});
   active=true;
   let raw='';
   try {
-    for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>2000000) return reply(413,{error:'项目过大'});}
+    for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>(req.url==='/thumbnail'?10000000:2000000)) return reply(413,{error:'项目过大'});}
     const input=JSON.parse(raw);
+    if(req.url==='/thumbnail') {
+      if(!input.artifact||typeof input.artifact.js!=='string'||typeof input.artifact.css!=='string')return reply(400,{error:'缺少已构建的应用'});
+      const result=await check(input.artifact,[],{capture:true});
+      return reply(200,{ok:result.ok,thumbnail:result.ok?result.thumbnail:null,error:result.error});
+    }
     const files=input.edit?visualEdit(input.files,input.edit):input.files;
     const artifact=await compile(files);
-    const result=input.check===false ? {ok:true,logs:['构建通过；未执行浏览器检查']} : await check(artifact,input.tests||[]);
-    reply(200,{...result,artifact:result.ok?artifact:null,...(input.edit?{files}: {})});
+    const result=input.check===false ? {ok:true,logs:['构建通过；未执行浏览器检查']} : await check(artifact,input.tests||[],{capture:true});
+    const {thumbnail,...verification}=result;
+    reply(200,{...verification,artifact:result.ok?{...artifact,...(thumbnail?{thumbnail}:{})}:null,...(input.edit?{files}: {})});
   } catch(e){if(e instanceof RunnerEnvironmentError){readyAt=0;console.error(e.message);reply(503,{code:'runner_unavailable',error:'验证浏览器暂不可用'});}else reply(200,{ok:false,error:String(e.message).slice(0,5000),logs:[]});}
   finally {active=false;}
 });

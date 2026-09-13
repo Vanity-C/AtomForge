@@ -7,6 +7,7 @@
  * read path.
  */
 import { invoke } from '@/lib/sdk';
+import {projectCollection, projectSession} from '@/lib/projectCollection';
 import type { GeneratedFile } from '@/lib/agent/codegen';
 import { languageOf } from '@/lib/agent/codegen';
 import { DEFAULT_PROFILE, findModel, type GenerationProfile } from '@/lib/agent/modelProvider';
@@ -65,8 +66,26 @@ export async function listProjects(): Promise<ProjectRecord[]> {
 }
 
 export async function getProject(id: number): Promise<ProjectRecord> {
-  const res = await invoke<{ project: ProjectRecord }>({ url: `/api/v1/af/projects/${id}` });
-  return res.project;
+  const session = projectSession();
+  const readRevision = projectCollection.beginRead(id, session);
+  try {
+    const res = await invoke<{ project: ProjectRecord }>({ url: `/api/v1/af/projects/${id}` });
+    projectCollection.upsert(res.project, session, readRevision);
+    return res.project;
+  } catch (error) {
+    if ([403, 404].includes((error as {status?: number})?.status || 0)) projectCollection.remove(id, session, readRevision);
+    throw error;
+  }
+}
+
+export interface ProjectThumbnail {
+  status: 'ready' | 'empty' | 'unbuilt' | 'unavailable' | 'changed';
+  version: number;
+  src?: string;
+}
+
+export async function getProjectThumbnail(id: number): Promise<ProjectThumbnail> {
+  return invoke<ProjectThumbnail>({url: `/api/v1/af/projects/${id}/thumbnail`, timeoutMs: 150000});
 }
 
 export async function createProject(input: {
@@ -75,6 +94,7 @@ export async function createProject(input: {
   initialPrompt: string;
   agentMode?: 'build' | 'team';
 }): Promise<ProjectRecord> {
+  const session = projectSession();
   const res = await invoke<{ project: ProjectRecord }>({
     url: '/api/v1/af/projects',
     method: 'POST',
@@ -85,6 +105,7 @@ export async function createProject(input: {
       agent_mode: input.agentMode || 'build',
     },
   });
+  projectCollection.upsert(res.project, session);
   return res.project;
 }
 
@@ -92,16 +113,20 @@ export async function updateProject(
   id: number,
   data: Partial<Pick<ProjectRecord, 'name' | 'description' | 'status' | 'entry_file' | 'is_public'>>,
 ): Promise<ProjectRecord> {
+  const session = projectSession();
   const res = await invoke<{ project: ProjectRecord }>({
     url: `/api/v1/af/projects/${id}`,
     method: 'PATCH',
     data: data as Record<string, unknown>,
   });
+  projectCollection.upsert(res.project, session);
   return res.project;
 }
 
 export async function deleteProject(id: number): Promise<void> {
+  const session = projectSession();
   await invoke({ url: `/api/v1/af/projects/${id}`, method: 'DELETE' });
+  projectCollection.remove(id, session);
 }
 
 /* --------------------------------------------------------------------- files */
@@ -122,7 +147,8 @@ export async function commitFiles(
   files: GeneratedFile[],
   meta: { summary: string; prompt: string; source: string; expectedVersion?:number },
 ): Promise<number> {
-  const res = await invoke<{ version: number }>({
+  const session = projectSession();
+  const res = await invoke<{ version: number; project: ProjectRecord }>({
     url: `/api/v1/af/projects/${projectId}/files`,
     method: 'POST',
     data: {
@@ -137,6 +163,7 @@ export async function commitFiles(
       expected_version:meta.expectedVersion,
     },
   });
+  projectCollection.upsert(res.project, session);
   return res.version;
 }
 
@@ -170,11 +197,13 @@ export async function rollbackToVersion(
   projectId: number,
   version: VersionRecord,
 ): Promise<number> {
-  const res = await invoke<{ version: number }>({
+  const session = projectSession();
+  const res = await invoke<{ version: number; project: ProjectRecord }>({
     url: `/api/v1/af/projects/${projectId}/rollback`,
     method: 'POST',
     data: { version_id: version.id },
   });
+  projectCollection.upsert(res.project, session);
   return res.version;
 }
 
@@ -254,15 +283,19 @@ export async function saveProfile(profile: GenerationProfile): Promise<Generatio
 /* --------------------------------------------------------------------- share */
 
 export async function enableShare(project: ProjectRecord): Promise<string> {
+  const session = projectSession();
   const res = await invoke<{ project: ProjectRecord }>({
     url: `/api/v1/af/projects/${project.id}/share`,
     method: 'POST',
   });
+  projectCollection.upsert(res.project, session);
   return res.project.share_slug;
 }
 
 export async function disableShare(project: ProjectRecord): Promise<void> {
-  await invoke({ url: `/api/v1/af/projects/${project.id}/share`, method: 'DELETE' });
+  const session = projectSession();
+  const res = await invoke<{project: ProjectRecord}>({ url: `/api/v1/af/projects/${project.id}/share`, method: 'DELETE' });
+  projectCollection.upsert(res.project, session);
 }
 
 export interface SharedPayload {

@@ -145,7 +145,8 @@ export async function invoke<T>({
       throw new Error('请求超时，请检查网络后重试');
     }
     if (auth && statusOf(error) === 401) {
-      clearSession();
+      // A delayed failure from a previous login must not sign out its replacement.
+      if (headers['X-AtomForge-Token'] === readToken()) clearSession();
       throw new UnauthorizedError(errorMessage(error, '登录状态已失效，请重新登录'));
     }
     throw error;
@@ -198,26 +199,39 @@ export async function signIn(identifier: string, password: string): Promise<AfUs
  * Resolve the signed-in account. Returns null when anonymous or when the stored
  * token is no longer valid, so callers can render a login entry instead.
  */
-export async function fetchCurrentUser(): Promise<AfUser | null> {
-  if (!readToken()) {
+let currentUserRequest: {token: string; promise: Promise<AfUser | null>} | undefined;
+
+export function fetchCurrentUser(): Promise<AfUser | null> {
+  const token = readToken();
+  if (!token) {
     if (currentUser) clearSession();
-    return null;
+    return Promise.resolve(null);
   }
-  try {
-    const payload = await invoke<{ user: AfUser }>({ url: '/api/v1/af-auth/me' });
-    currentUser = payload.user;
+  if (currentUserRequest?.token === token) return currentUserRequest.promise;
+  const request: Promise<AfUser | null> = (async () => {
     try {
-      localStorage.setItem(USER_KEY, JSON.stringify(payload.user));
-    } catch {
-      /* ignore */
+      const payload = await invoke<{ user: AfUser }>({ url: '/api/v1/af-auth/me' });
+      // A response from a replaced login cannot restore or overwrite identity.
+      if (readToken() !== token) return currentUser;
+      currentUser = payload.user;
+      try {
+        localStorage.setItem(USER_KEY, JSON.stringify(payload.user));
+      } catch {
+        /* ignore */
+      }
+      notify();
+      return payload.user;
+    } catch (error) {
+      if (readToken() !== token) return currentUser;
+      if (error instanceof UnauthorizedError || statusOf(error) === 401) return null;
+      // Network hiccup: fall back to the cached profile instead of forcing logout.
+      return currentUser;
     }
-    notify();
-    return payload.user;
-  } catch (error) {
-    if (error instanceof UnauthorizedError || statusOf(error) === 401) return null;
-    // Network hiccup: fall back to the cached profile instead of forcing logout.
-    return currentUser;
-  }
+  })().finally(() => {
+    if (currentUserRequest?.promise === request) currentUserRequest = undefined;
+  });
+  currentUserRequest = {token, promise: request};
+  return request;
 }
 
 export async function signOut(): Promise<void> {

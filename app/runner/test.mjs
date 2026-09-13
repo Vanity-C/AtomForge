@@ -1,6 +1,30 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import {compile,check,visualEdit,MAX_TEST_STEPS,ready} from './server.mjs';
+test('project cover is the actual initial render before interaction tests mutate it',async()=>{
+  const artifact=await compile([{path:'App.jsx',content:`export default function App(){const [n,setN]=React.useState(0);return <main style={{background:n?'#ce3030':'#264f35',height:800,color:'#fff'}}><h1>Actual project cover</h1><button onClick={()=>setN(n+1)}>{n}</button></main>}`}]);
+  const initial=await check(artifact,[],{capture:true});
+  const interacted=await check(artifact,[{action:'click',selector:'button'},{action:'text',selector:'button',value:'1'}],{capture:true});
+  assert.equal(initial.ok,true,JSON.stringify(initial));
+  assert.equal(interacted.ok,true,JSON.stringify(interacted));
+  assert.match(initial.thumbnail,/^data:image\/jpeg;base64,\/9j\//);
+  assert.ok(initial.thumbnail.length>1000);
+  assert.equal(initial.thumbnail,interacted.thumbnail,'cover must not show state created by a test');
+});
+test('cover rendering cannot open a WebSocket to the runner network',async()=>{
+  let handshakes=0;
+  const probe=http.createServer((req,res)=>res.end());
+  probe.on('upgrade',(req,socket)=>{handshakes++;socket.destroy();});
+  await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));
+  try {
+    const address='ws://127.0.0.1:'+probe.address().port;
+    const artifact=await compile([{path:'App.jsx',content:`const socket=new WebSocket(${JSON.stringify(address)});export default function App(){return <h1>Offline cover</h1>}`}]);
+    const result=await check(artifact,[],{capture:true});
+    assert.equal(result.ok,true,JSON.stringify(result));
+    assert.equal(handshakes,0,'untrusted application must not reach local services via WebSocket');
+  } finally {await new Promise(resolve=>probe.close(resolve));}
+});
 test('readiness proves compilation and a working browser, including simultaneous probes',async()=>{
   const results=await Promise.all([ready(),ready()]);
   assert.deepEqual(results,[{status:'ready'},{status:'ready'}]);

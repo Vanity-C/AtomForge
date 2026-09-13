@@ -3,14 +3,14 @@ import {Check,Clock3,Loader2,Pause} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {Textarea} from '@/components/ui/textarea';
 import {type PendingConfirmation} from '@/lib/studio';
-import {useTeam} from './AgentProvider';
+import {useStageTeam} from './AgentProvider';
 import type {AgentTeam} from '@/lib/agentProfiles';
 import {invoke,errorMessage} from '@/lib/sdk';
 import AgentPersona from './AgentPersona';
 
 type Draft={selections:Record<string,string>;other:Record<string,string>;feedback:string};
 export default function ConfirmationCard({runId,pending,serverTime,canEdit,onUpdated,team}:{runId:string;pending:PendingConfirmation;serverTime?:number;canEdit:boolean;onUpdated:()=>void;team?:AgentTeam}) {
-  const members=useTeam(team);
+  const members=useStageTeam(team);
   const person=members.find(r=>r.id===pending.role)||members[0];
   const agentLabel=(role:string)=>{const member=members.find(r=>r.id===role);return member?`${member.alias} · ${member.name}`:role;};
   const cacheKey=`atomforge.confirmation.${runId}.${pending.id}`;

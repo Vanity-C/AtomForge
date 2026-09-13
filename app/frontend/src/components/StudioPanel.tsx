@@ -3,14 +3,15 @@ import {useEffect,useState} from 'react';
 import {Button} from '@/components/ui/button';
 import {invoke,errorMessage} from '@/lib/sdk';
 import {type AgentMode,type StudioRun} from '@/lib/studio';
-import {useTeam} from './AgentProvider';
+import {useAgentTeam} from './AgentProvider';
 import TeamBoard from './TeamBoard';
+import AgentIntroduction from './AgentIntroduction';
 import PreviewFrame from './PreviewFrame';
 import {toast} from 'sonner';
 import {runExperience} from '@/lib/runExperience';
 
 export default function StudioPanel({run,onRun,onSaved,cloudSlug,agentMode='build'}:{run:StudioRun|null;onRun:(id:string)=>void;onSaved:()=>void;cloudSlug?:string|null;agentMode?:AgentMode}) {
-  const TEAM_ROLES=useTeam(run?.agents);
+  const agents=useAgentTeam(run?.agents);
   const [candidate,setCandidate]=useState(0);
   const [busy,setBusy]=useState(false);
   useEffect(()=>{setCandidate(0);},[run?.id]);
@@ -33,7 +34,10 @@ export default function StudioPanel({run,onRun,onSaved,cloudSlug,agentMode='buil
     {experience.active&&<p className="mt-2" aria-live="polite">{experience.title} · {experience.description}</p>}
     <details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer font-medium">执行日志（{run.events.length}）</summary>
       <div className="mt-4 space-y-3 text-xs">
-      {run.events.filter(e=>e!==planEvent).map((e,i)=><div key={i} className="flex gap-3 border-l-2 border-border pl-3"><span className="w-20 shrink-0 text-muted-foreground">{TEAM_ROLES.find(role=>role.id===e.role)?.name||stages[e.stage]||e.stage}</span><span className="min-w-0 whitespace-pre-wrap break-words">{e.message}</span></div>)}
+      {run.events.filter(e=>e!==planEvent).map((e,i)=>{
+        const person=agents[e.role||''];
+        return <div key={i} className="flex gap-3 border-l-2 border-border pl-3">{person?<AgentIntroduction person={person} followParent><span className="w-20 shrink-0 text-muted-foreground">{person.title}</span></AgentIntroduction>:<span className="w-20 shrink-0 text-muted-foreground">{stages[e.stage]||e.stage}</span>}<span className="min-w-0 whitespace-pre-wrap break-words">{e.message}</span></div>;
+      })}
       </div>
     </details>
     {run.result.summary&&<details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer font-medium">交付摘要{run.result.version ? ` · v${run.result.version}` : ''}</summary><p className="mt-3 whitespace-pre-wrap text-sm text-muted-foreground">{run.result.summary}</p></details>}

@@ -8,7 +8,7 @@ by the AtomForge account id rather than by the platform identity.
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -110,6 +110,18 @@ async def get_project(
     """Read a single owned project."""
     project = await _service(db, current_user).get_project(project_id)
     return {"project": project}
+
+
+@router.get("/projects/{project_id}/thumbnail")
+async def get_project_thumbnail(
+    project_id: int,
+    response: Response,
+    current_user: Af_users = Depends(get_af_user),
+):
+    """Return a member-authorized cover of the project's current built version."""
+    from services.project_thumbnails import project_thumbnail
+    response.headers['Cache-Control'] = 'private, no-store'
+    return await project_thumbnail(project_id, str(current_user.id))
 
 
 @router.patch("/projects/{project_id}")

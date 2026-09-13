@@ -100,7 +100,7 @@ def validate_review(raw):
 
 
 async def execute_team(run_id, owner, project_id, payload):
-    from services.agent_profiles import snapshot,complete_team
+    from services.agent_profiles import snapshot,complete_team,roster,MEMBER_PREFIX,ROLE_IDS
     members=complete_team(payload.get('agents') or await snapshot(owner))
     async with db_manager.session() as db:
         saved = await db.get(StudioRun,run_id)
@@ -202,6 +202,22 @@ async def execute_team(run_id, owner, project_id, payload):
     if latest_feedback:
         context['originalRequest']=payload['instruction']
         context['request']=latest_feedback
+    assigned_ids={members[role]['id'] for role in ROLE_IDS}
+    advisors=[person for person in roster(members) if person['id'] not in assigned_ids]
+    if advisors:
+        advice=documents.setdefault('member_advice',{})
+        for person in advisors:
+            if person['id'] in advice:continue
+            target=MEMBER_PREFIX+person['id']
+            await role_event(target,'我先从自己的专长出发，给本轮任务补充建议。',kind='activity',agent=person)
+            raw=await studio.call_model(owner,project_id,run_id,payload['model'],'team_'+person['role'],[
+                {'role':'system','content':'你是本轮已选团队的协作成员。根据自己的专长为团队领导提出具体建议、风险或验收要点，帮助制定本轮安排。返回 JSON {"summary":"简短建议概述","items":["具体建议"]}。本轮仅提供分析建议，不声称已经修改代码或执行测试。'},
+                {'role':'user','content':json.dumps(context,ensure_ascii=False)}],max_tokens=1800,
+                agent_team={**members,person['role']:person},event_role=target)
+            advice[person['id']]={'agent':person,**Document.model_validate(raw).model_dump()}
+            await persist()
+            await role_event(target,advice[person['id']]['summary'],'done',kind='handoff',recipient='leader',agent=person,output=advice[person['id']])
+        context['memberAdvice']=advice
     if 'leader' not in documents:
         await role_event('leader','收到需求。我先拆分任务、安排负责人和把关人，再带团队推进。',kind='activity',recipient='user')
         await turn('leader',context,lambda r:LeadershipPlan.model_validate(r).model_dump(),3200)

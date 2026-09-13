@@ -15,16 +15,32 @@ chat_locks = {}
 
 
 async def messages(owner, project_id, role='all', before=None):
-    from services.agent_profiles import legacy_team
+    from services.agent_profiles import legacy_team, MEMBER_PREFIX
     async with db_manager.session() as db:
         await AfProjectService(db,str(owner)).get_project(project_id)
         query=select(StudioConversation).where(StudioConversation.project_id==project_id,StudioConversation.owner==str(owner))
-        if role!='all': query=query.where(or_(StudioConversation.sender==role,StudioConversation.recipient==role))
+        member_id=role.removeprefix(MEMBER_PREFIX) if role.startswith(MEMBER_PREFIX) else None
+        if role!='all' and not member_id: query=query.where(or_(StudioConversation.sender==role,StudioConversation.recipient==role))
         if before: query=query.where(StudioConversation.id<before)
-        rows=(await db.execute(query.order_by(StudioConversation.id.desc()).limit(100))).scalars().all()
+        rows=[];teams={};cursor=None
+        # Member conversations also include stage events from immutable snapshots;
+        # filtering against today's role assignments would misattribute history.
+        while len(rows)<100:
+            page_query=query.where(StudioConversation.id<cursor) if cursor else query
+            page=(await db.execute(page_query.order_by(StudioConversation.id.desc()).limit(100))).scalars().all()
+            if not page:break
+            run_ids={r.run_id for r in page if r.run_id and r.run_id not in teams}
+            runs=(await db.execute(select(StudioRun).where(StudioRun.id.in_(run_ids),StudioRun.owner==str(owner)))).scalars().all() if run_ids else []
+            teams.update({r.id:json.loads(r.payload).get('agents') or legacy_team() for r in runs})
+            for row in page:
+                row_team=teams.get(row.run_id,{})
+                if not member_id or role in {row.sender,row.recipient} or json.loads(row.detail).get('agent',{}).get('id')==member_id or any(row_team.get(actor,{}).get('id')==member_id for actor in (row.sender,row.recipient)):
+                    rows.append(row)
+                    if len(rows)==100:break
+            cursor=page[-1].id
+            if len(page)<100:break
         run_ids={r.run_id for r in rows if r.run_id}
-        runs=(await db.execute(select(StudioRun).where(StudioRun.id.in_(run_ids),StudioRun.owner==str(owner)))).scalars().all() if run_ids else []
-        teams={r.id:json.loads(r.payload).get('agents') or legacy_team() for r in runs}
+        teams={rid:team for rid,team in teams.items() if rid in run_ids}
         return {'teams':teams,'items':[{'id':r.id,'run_id':r.run_id,'sender':r.sender,'recipient':r.recipient,'kind':r.kind,'content':r.content,'detail':json.loads(r.detail),'created':r.created} for r in reversed(rows)],'next_before':rows[-1].id if len(rows)==100 else None}
 
 
@@ -49,9 +65,10 @@ async def append(owner,project_id,sender,recipient,kind,content,detail=None):
 
 async def chat(owner,project_id,role,content,model):
     from services.team import ROLES
-    if role not in ROLES: raise HTTPException(400,'未知角色')
+    from services.agent_profiles import snapshot,complete_team,resolve_member,MEMBER_PREFIX
+    target=role
+    if role not in ROLES and not role.startswith(MEMBER_PREFIX): raise HTTPException(400,'未知角色')
     await studio.validate_model(model)
-    from services.agent_profiles import snapshot,complete_team
     members=await snapshot(owner)
     lock=chat_locks.setdefault(project_id,asyncio.Lock())
     if lock.locked(): raise HTTPException(429,'此项目已有角色正在回复，请稍候')
@@ -67,28 +84,36 @@ async def chat(owner,project_id,role,content,model):
             if run and run.status in {'queued','running','awaiting_input'}:
                 members=json.loads(run.payload).get('agents') or members
             members=complete_team(members)
+            selected=resolve_member(members,target)
+            if not selected:raise HTTPException(400,'该智能体不在当前团队中')
+            if target.startswith(MEMBER_PREFIX):
+                role='leader' if members['leader']['id']==selected['id'] else selected['role']
+                # Same-profession colleagues need their own persona for direct chat.
+                members={**members,role:selected}
             context={'files':[{'path':f['path'],'content':f['content'][:20000]} for f in files],'task':json.loads(run.result) if run else {},'discussion':await discussion_context(owner,project_id),'question':content}
             context['currentRun']={'id':run.id,'status':run.status,'stage':run.stage,'error':run.error,'instruction':json.loads(run.payload).get('instruction'),'recentActivity':[e for e in json.loads(run.events) if not e.get('kind','').startswith('tool_')][-8:]} if run else None
-        await append(owner,project_id,'user',role,'chat',content)
-        await append(owner,project_id,role,'user','activity','收到，我先结合项目进展看看。',{'agent':members[role]})
+        await append(owner,project_id,'user',target,'chat',content)
+        await append(owner,project_id,target,'user','activity','收到，我先结合项目进展看看。',{'agent':selected})
         try:
-            if role=='leader':return await leader_reply(owner,project_id,content,model,context,members)
+            if role=='leader':return await leader_reply(owner,project_id,content,model,context,members,member_targets=target.startswith(MEMBER_PREFIX))
             result=await studio.model_call(owner,project_id,'',model,'chat_'+role,[{'role':'system','content':f'你是{ROLES[role][0]}，职责是{ROLES[role][1]}\n本次仅讨论：返回 JSON {{"answer":"中文回答","plan":["简要建议或决策依据"]}}。不输出内部思维链。不声称执行了工具、修改了代码或已经通知其他角色。参考真实上下文区分已完成与建议；如果用户要求修改，解释可通过需求确认卡或作为团队需求发送实施。'},{'role':'user','content':json.dumps(context,ensure_ascii=False)}],max_tokens=2200,agent_team=members)
             if not isinstance(result.get('answer'),str) or not result['answer'].strip(): raise ValueError('角色未返回有效回复')
-            await append(owner,project_id,role,'user','chat',result['answer'][:10000],{'plan':result.get('plan',[]),'agent':members[role]})
+            await append(owner,project_id,target,'user','chat',result['answer'][:10000],{'plan':result.get('plan',[]),'agent':selected})
         except HTTPException:
             raise
         except Exception as exc:
-            await append(owner,project_id,role,'user','error','角色回复未完成，请重新发送。')
+            await append(owner,project_id,target,'user','error','角色回复未完成，请重新发送。')
             raise HTTPException(502,'角色回复未完成，请重试') from exc
     return {'success':True}
 
 
-async def leader_reply(owner,project_id,content,model,context,members):
+async def leader_reply(owner,project_id,content,model,context,members,member_targets=False):
     """Bounded, real specialist consultations followed by a reply or execution request."""
     from pydantic import BaseModel,Field
     from typing import Literal
     from services.leadership import queue_feedback
+    from services.agent_profiles import MEMBER_PREFIX
+    def actor(role):return MEMBER_PREFIX+members[role]['id'] if member_targets else role
     class Consultation(BaseModel):
         role:Literal['product','design','architect','engineer','qa']
         question:str=Field(min_length=1,max_length=1500)
@@ -105,15 +130,17 @@ consult 最多3位，必要才咨询，不虚构回复。尚未执行的动作�
         raw=await studio.model_call(owner,project_id,'',model,'chat_leader',[{'role':'system','content':system},{'role':'user','content':json.dumps({**context,**extra},ensure_ascii=False)}],max_tokens=2600,agent_team=members)
         return Reply.model_validate(raw)
     reply=await ask({})
-    consultations=[]
+    consultations=[];consulted={members['leader']['id']}
     for consultation in reply.consult:
         role=consultation.role
-        await append(owner,project_id,'leader',role,'chat',consultation.question,{'agent':members['leader']})
+        if members[role]['id'] in consulted:continue
+        consulted.add(members[role]['id'])
+        await append(owner,project_id,actor('leader'),actor(role),'chat',consultation.question,{'agent':members['leader']})
         raw=await studio.model_call(owner,project_id,'',model,'chat_'+role,[{'role':'system','content':'团队领导正在向你咨询。基于真实源码、任务和验收记录回答。返回 JSON {"answer":"给领导的专业意见"}。此次仅分析，不修改代码、不捏造执行结果，指出依据与可实施的建议。'},{'role':'user','content':json.dumps({**context,'question':consultation.question},ensure_ascii=False)}],max_tokens=1800,agent_team=members)
         answer=raw.get('answer')
         if not isinstance(answer,str) or not answer.strip():raise ValueError('成员未返回有效意见')
         consultations.append({'role':role,'answer':answer[:6000]})
-        await append(owner,project_id,role,'leader','chat',answer[:6000],{'agent':members[role]})
+        await append(owner,project_id,actor(role),actor('leader'),'chat',answer[:6000],{'agent':members[role]})
     if consultations:reply=await ask({'consultationResults':consultations,'instructionToLeader':'咨询已实际完成。现在给用户最终回应，不再请求咨询。'})
     run_id=None;queued=False
     if reply.action=='implement':
@@ -126,10 +153,10 @@ consult 最多3位，必要才咨询，不虚构回复。尚未执行的动作�
                 started=await studio.start(owner,project_id,instruction,model)
                 run_id=started['id']
         except HTTPException as exc:
-            await append(owner,project_id,'leader','user','chat','这次调整暂未安排：'+str(exc.detail),{'agent':members['leader']})
+            await append(owner,project_id,actor('leader'),'user','chat','这次调整暂未安排：'+str(exc.detail),{'agent':members['leader']})
             raise
     status='\n新反馈已进入当前任务，会在安全节点保留草稿并重新调度。' if queued else '\n任务已开始，我会协调实现与验证。' if run_id else ''
-    await append(owner,project_id,'leader','user','chat',reply.answer+status,{'agent':members['leader'],'scheduled_run':run_id,'queued':queued})
+    await append(owner,project_id,actor('leader'),'user','chat',reply.answer+status,{'agent':members['leader'],'scheduled_run':run_id,'queued':queued})
     return {'success':True,'run_id':run_id,'queued':queued}
 
 

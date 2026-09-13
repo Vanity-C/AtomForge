@@ -10,7 +10,20 @@ CLI 必须支持 `exec --ignore-user-config`、`--ephemeral` 和 app-server 模�
 
 Windows 系统代理会传给 CLI；显式设置的 `HTTP_PROXY`、`HTTPS_PROXY` 优先。模型调用在临时目录中运行，使用只读沙箱并关闭 shell、应用、插件、hooks、浏览器和多智能体能力。生成文件继续由 AtomForge 原有的增量补丁、runner 验证及版本提交流程处理。
 
-Docker/远程服务器不会自动获得宿主机的 Codex 登录。此版本已验证本机后端接入；容器没有 CLI 或 ChatGPT 登录时会明确显示不可用。不要把个人 Codex 凭据打包进镜像或公开仓库。
+Dockerfile 固定安装 Codex CLI `0.153.0`，运行镜像使用 `/usr/local/bin/codex` 原生程序。生产容器设置 `CODEX_HOME=/data/codex`，登录状态保存在已有 `data` 卷；启动脚本以应用用户创建目录并设为 `0700`，升级旧数据卷时也会创建。重建镜像或重建容器会保留卷中的登录状态；Docker/远程服务器仍不会自动获得你电脑上的 Codex 登录。
+
+首次使用时，先在个人 ChatGPT 账号的安全设置启用设备码登录；团队工作区由管理员在工作区权限中启用。新镜像启动后，在服务器的仓库目录运行：
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml exec app codex login --device-auth
+docker compose --env-file .env.production -f compose.production.yaml exec app codex login status
+```
+
+第一条命令会给出链接和一次性代码，用自己的浏览器登录 ChatGPT 并完成授权，再执行第二条确认登录方式为 ChatGPT。随后在 AtomForge「生成设置」刷新模型列表、选择 GPT 模型并保存；列表缓存 60 秒，刚登录后仍显示不可用时，等待缓存到期再刷新。详细升级步骤见 [部署与维护](DEPLOYMENT.md#接入-codex-账号额度)。只有完成服务器登录并验证生成后，才算该生产实例已接通；本机或隔离容器检查不能替代生产验证。
+
+该接入使用服务器登录账号的 Codex 额度，实例中的所有 AtomForge 用户选择 GPT 时都会共用该账号；当前没有按网站用户绑定各自 Codex 账号。API Key 属于独立 API 计费，当前 GPT 接入不接受 API Key 登录。此方案用于受信任的个人部署；官方推荐自动化默认使用 API Key，并要求避免在不受信任或公开环境暴露 Codex 执行能力，见 [官方认证说明](https://learn.chatgpt.com/docs/auth) 与 [非交互调用说明](https://learn.chatgpt.com/docs/non-interactive-mode)。
+
+不要把个人 Codex 凭据打包进镜像或公开仓库。`deploy/backup.sh` 只备份数据库和配套 `jwt-secret`，不包含 `/data/codex`；在新数据卷恢复备份后，应重新执行设备码登录。
 
 ## 用量口径
 

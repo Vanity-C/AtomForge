@@ -7,11 +7,23 @@ RUN pnpm install --frozen-lockfile
 COPY app/frontend/ ./
 RUN pnpm run build
 
+FROM node:24-bookworm-slim AS codex
+ARG CODEX_VERSION=0.153.0
+RUN npm install --global --registry=https://registry.npmjs.org "@openai/codex@${CODEX_VERSION}" \
+    && codex --version \
+    && find /usr/local/lib/node_modules/@openai -type f -name codex -executable \
+       -exec cp {} /usr/local/bin/atomforge-codex \; \
+    && test -x /usr/local/bin/atomforge-codex
+
 FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    CODEX_HOME=/data/codex \
+    ATOMFORGE_CODEX_BIN=/usr/local/bin/codex
 WORKDIR /app/backend
+COPY --from=codex /usr/local/bin/atomforge-codex /usr/local/bin/codex
+RUN codex --version
 COPY app/backend/requirements.lock.txt ./requirements.lock.txt
 RUN pip install --no-cache-dir -r requirements.lock.txt
 RUN groupadd --gid 10001 atomforge \

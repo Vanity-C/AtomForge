@@ -243,14 +243,15 @@ async def traced_tool(run_id, role, tool, inputs, operation, summarize):
     return result
 
 
-async def call_model(owner,project_id,run_id,model,stage,messages,max_tokens=12000,temperature=.25):
+async def call_model(owner,project_id,run_id,model,stage,messages,max_tokens=12000,temperature=.25,agent_team=None,event_role=None):
     from services.leadership import apply_feedback
     await apply_feedback(run_id)
     role=stage.removeprefix('team_')
     if role in {'code','repair'}: role='engineer'
     if role=='plan':role='leader'
-    return await traced_tool(run_id,role,'model.generate',{'model':model,'stage':stage},
-        lambda:model_call(owner,project_id,run_id,model,stage,messages,max_tokens=max_tokens,temperature=temperature),
+    kwargs={'agent_team':agent_team} if agent_team is not None else {}
+    return await traced_tool(run_id,event_role or role,'model.generate',{'model':model,'stage':stage},
+        lambda:model_call(owner,project_id,run_id,model,stage,messages,max_tokens=max_tokens,temperature=temperature,**kwargs),
         lambda r:{'summary':r.get('summary',r.get('goal','模型已返回结构化产出')),'files':patch_paths(r)})
 
 

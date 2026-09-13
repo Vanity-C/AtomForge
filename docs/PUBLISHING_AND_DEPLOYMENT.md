@@ -8,15 +8,15 @@
 
 创建应用时使用以下资料：
 
-| 字段 | GitHub | Gitee |
-| --- | --- | --- |
-| 应用名称 | AtomForge Local | AtomForge Local |
-| 网站地址 | `http://127.0.0.1:15173` | `http://127.0.0.1:15173` |
-| 回调地址 | `http://127.0.0.1:15173/api/v1/af-auth/oauth/github/callback` | `http://127.0.0.1:15173/api/v1/af-auth/oauth/gitee/callback` |
+| 字段 | GitHub | Gitee | Netlify |
+| --- | --- | --- | --- |
+| 应用名称 | AtomForge Local | AtomForge Local | AtomForge Local |
+| 网站地址 | `http://127.0.0.1:15173` | `http://127.0.0.1:15173` | `http://127.0.0.1:15173`（若要求填写） |
+| 回调地址 | `http://127.0.0.1:15173/api/v1/af-auth/oauth/github/callback` | `http://127.0.0.1:15173/api/v1/af-auth/oauth/gitee/callback` | `http://127.0.0.1:15173/api/v1/af-auth/oauth/netlify/callback` |
 
 如果平台拒绝本地回调，应使用实际可访问的 HTTPS 开发域名并同步修改 PUBLIC_ORIGIN、网站访问地址和平台回调；不能只改其中一处。服务在发起授权前检查浏览器 Origin，避免在 localhost 发起、127.0.0.1 回调导致 Cookie 丢失。代理需保留浏览器的 Origin 请求头。
 
-在两个平台分别创建 OAuth 应用，然后在本地的 `app/backend/.env.local`，或 Docker 实际使用的环境文件中配置：
+在需要接入的平台创建 OAuth 应用，然后在本地的 `app/backend/.env.local`，或 Docker 实际使用的环境文件中配置：
 
 ```dotenv
 ATOMFORGE_PUBLIC_ORIGIN=http://127.0.0.1:15173
@@ -38,6 +38,8 @@ ATOMFORGE_NETLIFY_CLIENT_SECRET=
 
 OAuth 应用注册入口：[GitHub](https://github.com/settings/developers)、[Gitee](https://gitee.com/oauth/applications)、[Netlify](https://app.netlify.com/user/applications)。配置后重启后端。未配置的入口会明确显示尚未开通，不会跳转到无效授权页面。
 
+只配置 Netlify 时，在仓库根目录运行 `.\configure-oauth.ps1 -Provider netlify`：保留当前网站地址，输入创建 OAuth 应用后获得的 Client ID、Client Secret（隐藏输入）。脚本不会修改已有 GitHub / Gitee 凭据；`.\configure-oauth.ps1 -Check -Provider netlify` 只显示配置状态与回调地址，不输出密钥。重启后端后，从配置中的网站地址登录，在“发布与部署”点击“重新检查连接”，然后连接 Netlify 完成授权。生产环境建议创建独立的 `AtomForge Production` 应用，使用生产 HTTPS 回调并将凭据配置到服务器环境文件。
+
 已有 AtomForge 用户应从个人中心或“发布与部署”连接第三方账号，绑定后可以通过该身份登录并访问原项目。首次直接第三方登录会创建独立账号，不会按未验证邮箱自动合并现有账号。首次创建的账号使用平台 ID 生成唯一用户名和占位邮箱，可以在个人中心修改资料。
 
 GitHub 登录使用 read:user / user:email 权限以及 PKCE；发布授权才额外请求 repo。Gitee 使用 user_info，发布时增加 projects。Netlify 仅作为已登录账号的部署连接，不作为登录入口。state 和登录交换票据与 HttpOnly 浏览器 Cookie 绑定、短时有效、单次使用。第三方令牌只在服务端加密保存，不返回浏览器。务必保持 ATOMFORGE_JWT_SECRET 稳定，轮换它会使旧会话及加密连接失效。
@@ -58,6 +60,8 @@ GitHub 登录使用 read:user / user:email 权限以及 PKCE；发布授权才�
 2. 生成任务完成验收，或在“应用云服务、构建与站内快照”执行构建检查。
 3. 点击“部署并生成公网链接”。AtomForge 读取已检查版本、创建独立 Netlify 站点、上传缺失文件，检查待发布地址，再切换线上部署并检查正式地址。
 4. 成功后展示真实的 `https://站点名.netlify.app` 地址。后续部署复用项目站点和正式地址。部署使用所连接 Netlify 账号的配额和套餐。
+
+若公网检查提示 HTTP 401，站点可能继承了 Netlify 团队的 Private 默认可见性，或启用了密码保护。在该站点的 Project configuration → General → Visitor access 中检查 Project visibility。当前流程会在切换正式版本前匿名检查预览地址，因此公开部署需要预览与正式地址均可公开访问；明确选择公开后，再点击原交付记录的“继续部署检查”，复用已上传的文件。不要为解决单个站点的问题修改整个团队的访问默认值。HTTP 403 应检查访问规则；超时或版本未同步可以稍后继续检查。参考 [Netlify 项目可见性](https://docs.netlify.com/manage/security/secure-access-to-sites/project-visibility/)。
 
 交付记录持续保存进度；刷新或关闭面板不停止后端部署。进程重启时标记中断，用户可继续检查已有部署，而无需重复上传。待发布版本检查失败不会替换正式版本；切换后的检查失败时，有上一版则尝试恢复，并显示恢复结果。没有上一版或恢复失败时会明确报告，不能当成已上线。
 

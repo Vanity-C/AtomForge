@@ -2,7 +2,7 @@ import {useState} from 'react';
 import {ArrowRight, Check, ChevronDown, CircleDashed, Flag, Loader2, PackageCheck, RotateCcw, ShieldCheck, Workflow} from 'lucide-react';
 import type {StudioRun} from '@/lib/studio';
 import {pipelineStages, type PipelineState} from '@/lib/pipeline';
-import {useTeam} from './AgentProvider';
+import {useStageTeam} from './AgentProvider';
 import AgentAvatar from './AgentAvatar';
 import AgentPersona from './AgentPersona';
 import '@/styles/pipeline.css';
@@ -11,7 +11,7 @@ const labels:Record<PipelineState,string>={pending:'等待交接',active:'正在
 function StateIcon({state}:{state:PipelineState}){return state==='complete'?<Check/>:state==='active'?<Loader2 className="animate-spin"/>:<CircleDashed/>;}
 
 export default function TeamBoard({run,mode='team'}:{run:StudioRun|null;mode?:'team'|'build'}) {
-  const team=useTeam(run?.agents);
+  const team=useStageTeam(run?.agents);
   const stages=pipelineStages(run,mode);
   const [selection,setSelection]=useState<{runId?:string;stage:string}|null>(null);
   const recommended=stages.find(s=>['active','waiting','blocked'].includes(s.state))||stages.find(s=>s.state==='pending')||stages[stages.length-1];

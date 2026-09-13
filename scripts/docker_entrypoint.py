@@ -14,6 +14,10 @@ def main():
     sys.path.insert(0, str(backend))
     data = Path(os.environ.get("ATOMFORGE_DATA_DIR", "/data"))
     data.mkdir(parents=True, exist_ok=True)
+    # Create this as the application user, including when upgrading an existing volume.
+    codex_home = Path(os.environ.setdefault("CODEX_HOME", str(data / "codex")))
+    codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    codex_home.chmod(0o700)
     os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{data / 'atomforge.db'}")
     if not os.environ.get("ATOMFORGE_JWT_SECRET", "").strip():
         secret_path = data / "jwt-secret"
@@ -26,7 +30,7 @@ def main():
             raise RuntimeError("Persistent JWT secret is empty; restore /data/jwt-secret.")
         os.environ["ATOMFORGE_JWT_SECRET"] = secret
     if not os.environ.get("APP_AI_KEY", "").strip():
-        print("APP_AI_KEY is not configured; set it in .env.docker to enable AI generation.")
+        print("APP_AI_KEY is not configured; DeepSeek is unavailable. GPT uses Codex ChatGPT login.")
     asyncio.run(initialize_database())
     # Jobs and quotas are process-local; keep exactly one worker.
     os.execv(sys.executable, [

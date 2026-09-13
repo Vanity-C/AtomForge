@@ -1,0 +1,46 @@
+.workspace-public { display: flex; flex-direction: column; min-height: 100dvh; background: hsl(var(--background)); }
+.workspace-shell .conversation-main { min-height: 0; }
+.workspace-shell .sidebar-bottom > a[aria-current='page'],
+.workspace-shell .sidebar-account > button[aria-current='page'] { background: #dfe2d7; color: #252820; font-weight: 600; }
+.workspace-shell .sidebar-navigation a:focus-visible,
+.workspace-shell .sidebar-bottom > a:focus-visible { outline: 2px solid #879f62; outline-offset: 2px; }
+.dark .workspace-shell .sidebar-bottom > a[aria-current='page'],
+.dark .workspace-shell .sidebar-account > button[aria-current='page'] { background: #353e2b; color: #e0e8d3; }
+
+/* The same compact navigation is used by every workspace page on a phone. */
+@media (max-width: 700px) {
+  .workspace-shell.conversation-studio { grid-template-columns: minmax(0, 1fr); grid-template-rows: 64px minmax(0, 1fr); }
+  .workspace-shell .conversation-sidebar { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; border-right: 0; border-bottom: 1px solid #e1e5d9; }
+  .workspace-shell .sidebar-brand-row { height: auto; }
+  .workspace-shell .sidebar-brand-row .studio-brand { display: flex; }
+  .workspace-shell .studio-brand > span:last-child,
+  .workspace-shell .sidebar-toggle,
+  .workspace-shell .sidebar-recent,
+  .workspace-shell .sidebar-navigation a > span,
+  .workspace-shell .sidebar-navigation a > small,
+  .workspace-shell .sidebar-bottom > a > span,
+  .workspace-shell .sidebar-account > button > span:last-child { display: none; }
+  .workspace-shell .sidebar-navigation { flex-direction: row; gap: 2px; }
+  .workspace-shell .sidebar-navigation a,
+  .workspace-shell .sidebar-bottom > a { justify-content: center; width: 34px; height: 36px; padding: 0; }
+  .workspace-shell .sidebar-bottom { display: flex; align-items: center; gap: 2px; padding: 0; }
+  .workspace-shell .sidebar-account { margin: 0 0 0 5px; padding: 0; border: 0; }
+  .workspace-shell .sidebar-account > button { width: 28px; padding: 0; }
+  .workspace-shell .conversation-page-heading { display: none; }
+  .workspace-shell .conversation-section-content { padding: 30px 18px 50px; }
+  .workspace-shell .conversation-home { min-height: calc(100dvh - 64px); padding: 42px 18px 70px; }
+  .workspace-shell .conversation-welcome h1 { font-size: 27px; }
+  .workspace-shell .conversation-welcome > p { font-size: 12px; }
+  .workspace-shell .conversation-team { flex-wrap: wrap; }
+  .workspace-shell .conversation-input-card { padding: 20px 16px 16px; border-radius: 18px; }
+  .workspace-shell .conversation-input-tools { flex-wrap: wrap; gap: 12px; }
+  .workspace-shell .conversation-send-group { margin-left: auto; }
+  .workspace-shell .conversation-composer-note { flex-wrap: wrap; gap: 4px; padding-inline: 4px; }
+  .dark .workspace-shell .conversation-sidebar { border-bottom-color: #30352b; }
+}
+@media (max-width: 359px) {
+  .workspace-shell .conversation-sidebar { padding-inline: 8px; gap: 4px; }
+  .workspace-shell .sidebar-navigation a,
+  .workspace-shell .sidebar-bottom > a { width: 30px; }
+  .workspace-shell .sidebar-account { margin-left: 0; }
+}

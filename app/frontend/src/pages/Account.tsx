@@ -1,8 +1,8 @@
 import {useRef, useState} from 'react';
-import {Link} from 'react-router-dom';
-import {ArrowLeft, Camera, Check, Loader2, RotateCcw, Upload} from 'lucide-react';
+import {Camera, Check, Loader2, RotateCcw, Upload} from 'lucide-react';
 import {toast} from 'sonner';
-import {LoginGate, TopBar, useAuth} from '@/components/AppShell';
+import {LoginGate, useAuth} from '@/components/AppShell';
+import WorkspaceShell from '@/components/WorkspaceShell';
 import AccountAvatar from '@/components/AccountAvatar';
 import ExternalAccounts from '@/components/ExternalAccounts';
 import UsernameField from '@/components/UsernameField';
@@ -95,13 +95,11 @@ function ProfileEditor({user}: {user: AfUser}) {
 
 export default function Account() {
   const {authState, user} = useAuth();
-  return <div className="min-h-screen bg-muted/20">
-    <TopBar authState={authState} user={user} brandTo="/dashboard"/>
-    {authState === 'loading' ? <div className="flex justify-center gap-2 py-20 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin"/>正在加载个人资料…</div> : !user ? <LoginGate title="登录后管理个人资料" description="修改用户名、绑定邮箱和个人头像。"/> : <main className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
-      <Link to="/dashboard" className="mb-6 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="h-3.5 w-3.5"/>返回我的项目</Link>
+  return <WorkspaceShell authState={authState} user={user} title="个人中心">
+    {authState === 'loading' ? <div className="flex justify-center gap-2 py-20 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin"/>正在加载个人资料…</div> : !user ? <LoginGate title="登录后管理个人资料" description="修改用户名、绑定邮箱和个人头像。"/> : <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
       <h1 className="text-2xl font-semibold tracking-tight">个人中心</h1><p className="mb-7 mt-2 text-sm text-muted-foreground">管理你的账号资料，让团队更容易认出你。</p>
       <ProfileEditor key={user.id} user={user}/>
       <div className="mt-8 rounded-2xl border bg-card p-6"><ExternalAccounts/></div>
-    </main>}
-  </div>;
+    </div>}
+  </WorkspaceShell>;
 }
