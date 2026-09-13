@@ -2,7 +2,7 @@
 
 把自然语言需求变成可操作、可继续修改、可发布的 React 应用。
 
-AtomForge 是独立实现的 AI 应用工作台：从需求拆解、角色交接、代码生成到浏览器验收和版本发布，提供可体验、可追踪的交付流程。当前交付版本 **v0.3.0**。
+AtomForge 是独立实现的 AI 应用工作台：从需求拆解、角色交接、代码生成到浏览器验收和版本发布，提供可体验、可追踪的交付流程。当前交付版本 **v0.3.1**。
 
 **[在线 Demo](https://newlifezh.top/) · [笔试说明](docs/SUBMISSION.md) · [公开在线说明](https://newlifezh.top/demo-guide.html) · [发布记录](https://github.com/Vanity-C/AtomForge/releases)**
 
@@ -118,6 +118,7 @@ npm test
 
 - [笔试说明：实现、取舍、完成度、扩展计划](docs/SUBMISSION.md)
 - [交付看板、战略策略、门禁和模板](docs/TEAM_WORKFLOW.md)
+- [v0.3.1 更新说明](docs/RELEASE_V0.3.1.md)
 - [v0.3.0 更新说明](docs/RELEASE_V0.3.0.md)
 - [模型接入与用量](docs/MODELS_V2.md)
 - [发布验证记录](docs/VALIDATION.md)

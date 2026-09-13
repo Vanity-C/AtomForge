@@ -2,7 +2,7 @@ name: atomforge-production
 
 services:
   app:
-    image: atomforge:${ATOMFORGE_VERSION:-0.3.0}
+    image: atomforge:${ATOMFORGE_VERSION:-0.3.1}
     build:
       context: .
       dockerfile: Dockerfile
@@ -38,7 +38,7 @@ services:
       options: {max-size: 10m, max-file: "3"}
 
   runner:
-    image: atomforge-runner:${ATOMFORGE_VERSION:-0.3.0}
+    image: atomforge-runner:${ATOMFORGE_VERSION:-0.3.1}
     build:
       context: .
       dockerfile: app/runner/Dockerfile

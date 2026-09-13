@@ -10,6 +10,7 @@ from core.database import db_manager
 from models.studio import StudioRun
 
 VERSION = 'delivery-v1'
+MAX_REPAIRS = 30
 STATES = [
     dict(id='backlog', name='待办', entry='工作包已记录，负责人唯一', exit='依赖和需求信息齐备', output='任务范围与依赖', next=['ready']),
     dict(id='ready', name='就绪', entry='依赖完成，验收标准和输出物明确', exit='负责人拉取，未超过 WIP', output='执行上下文', next=['doing']),
@@ -32,7 +33,7 @@ class Policy(BaseModel):
     priority: str = Field(default='normal', pattern='^(urgent|normal|low)$')
     wip: int = Field(default=1, ge=1, le=3)
     sla_minutes: int = Field(default=15, ge=1, le=1440)
-    max_repairs: int = Field(default=2, ge=0, le=2)
+    max_repairs: int = Field(default=MAX_REPAIRS, ge=0, le=MAX_REPAIRS)
     min_tests: int = Field(default=2, ge=2, le=16)
 
 
@@ -65,7 +66,7 @@ async def initialize(run_id, plan, members, documents):
                 'state':'review' if awaiting else 'done' if complete else 'backlog','blocked':None,'evidence':None,'created_at':now,'history':[]})
         for card in cards:
             if card['state']=='backlog' and dependencies_ready(cards,card):card['state']='ready'
-        payload['workflow']={'version':VERSION,'revision':0,'policy':Policy.model_validate(plan.get('policy',{})).model_dump(),'policy_history':[], 'cards':cards,'created_at':now}
+        payload['workflow']={'version':VERSION,'repair_budget_version':2,'revision':0,'policy':Policy.model_validate(plan.get('policy',{})).model_dump(),'policy_history':[], 'cards':cards,'created_at':now}
         row.payload=json.dumps(payload,ensure_ascii=False);await db.commit()
 
 

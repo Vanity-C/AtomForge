@@ -46,7 +46,7 @@ class LeadershipPlan(BaseModel):
 PLAN_PROMPT = '''你是团队领导，负责本次任务的实际拆分、分配和调度。根据最新用户需求、现有代码和交接结果制定计划。
 返回 JSON {"goal":"目标","summary":"向用户说明的安排","stages":[{"role":"product|design|architect|engineer|qa","title":"本次阶段名","tasks":["该成员具体要做的工作"],"delivery":"应交付的结果","gatekeeper":"leader|product|design|architect|qa"}]}。
 每个专业岗位恰好一个工作包，顺序固定为 product、design、architect、engineer、qa，不修改主干状态或顺序。gatekeeper 依次为 design、architect、engineer、qa、qa。专业角色直接交接，测试缺陷直接交给工程师，不例行向领导汇报。
-任务要贴合本轮需求，保留已有未涉及功能。每个工作包上卡，列出具体检查项、唯一负责人和输出物。领导只管理目标、优先级、资源、SLA和例外，不代替专业评审。可提供 policy {"priority":"urgent|normal|low","wip":1,"sla_minutes":15,"max_repairs":2,"min_tests":2}；WIP 1–3，SLA 1–1440分钟，修复0–2次，独立测试至少2–16步。默认普通优先级，不无理由加急。不能跳过真实构建或独立验收，不声称尚未执行的任务已经完成。'''
+任务要贴合本轮需求，保留已有未涉及功能。每个工作包上卡，列出具体检查项、唯一负责人和输出物。领导只管理目标、优先级、资源、SLA和例外，不代替专业评审。可提供 policy {"priority":"urgent|normal|low","wip":1,"sla_minutes":15,"max_repairs":30,"min_tests":2}；WIP 1–3，SLA 1–1440分钟，修复0–30次，默认30次，仅在用户明确要求时降低，独立测试至少2–16步。默认普通优先级，不无理由加急。不能跳过真实构建或独立验收，不声称尚未执行的任务已经完成。'''
 
 
 class Replan(Exception):

@@ -32,7 +32,9 @@ class Question(BaseModel):
 
 
 class Brief(BaseModel):
-    handoff: str = Field(default='',max_length=400)
+    # Presentation text must not reject an otherwise valid deliverable. Keep it
+    # whole in the document; bound only the event's display preview.
+    handoff: str = Field(default='')
     goal: str = Field(min_length=1, max_length=1500)
     tasks: list[str] = Field(min_length=1, max_length=16)
     acceptance: list[str] = Field(min_length=1, max_length=16)
@@ -40,14 +42,14 @@ class Brief(BaseModel):
 
 
 class Document(BaseModel):
-    handoff: str = Field(default='',max_length=400)
+    handoff: str = Field(default='')
     summary: str = Field(min_length=1, max_length=1500)
     items: list[str] = Field(min_length=1, max_length=20)
     questions: list[Question | str] = Field(default_factory=list, max_length=2)
 
 
 class Review(BaseModel):
-    handoff: str = Field(default='',max_length=400)
+    handoff: str = Field(default='')
     approved: StrictBool
     summary: str = Field(min_length=1, max_length=1500)
     issues: list[str] = Field(max_length=10)
@@ -85,6 +87,14 @@ for role in ('product', 'design', 'architect'):
 
 def blocking_questions(questions):
     return [q for q in questions if isinstance(q, dict) and q.get('kind') in {'user_requested', 'scope_conflict', 'external_dependency', 'irreversible'}]
+
+
+def handoff_preview(message):
+    """Only shorten the UI message; output.handoff remains the source of truth."""
+    if len(message) <= 400:
+        return message
+    suffix = '…（完整交接见文档）'
+    return message[:400-len(suffix)] + suffix
 
 
 CONFIRMED_SCOPE = '\n以 request、approvedRequirements 和 approvedSolution 中已确认的方案为执行与验收依据。用户最新确认的修改优先于初始请求、旧历史、讨论建议和错误的验收反馈。不要用旧配色或已被替换的要求推翻已确认方案；不要自行扩大范围。'
@@ -189,7 +199,7 @@ async def execute_team(run_id, owner, project_id, payload):
 
     async def handoff(sender,recipient,output):
         message=output.get('handoff') or f"{members[recipient]['name']}，这部分交给你了。"+(output.get('summary') or output.get('goal') or '请结合交接文档继续。')
-        await role_event(sender,message,'done',kind='handoff',recipient=recipient,output=output)
+        await role_event(sender,handoff_preview(message),'done',kind='handoff',recipient=recipient,output=output)
 
     async def turn(role, context, schema, max_tokens=2600):
         from services.agent_chat import discussion_context
@@ -274,7 +284,9 @@ async def execute_team(run_id, owner, project_id, payload):
     if not resume_verification: await dispatch('engineer')
     files = draft_files
     failure = payload.get('previousError', '')
-    for attempt in range(3):
+    # One initial verification plus the configured repair rounds. Read the
+    # live policy at failure boundaries so strategy changes remain effective.
+    for attempt in range(workflow.MAX_REPAIRS + 1):
         await workflow.move(run_id,'engineer','doing','实现工作包' if not attempt else '依据测试证据返工')
         if not (resume_verification and attempt == 0):
             await role_event('engineer', '接收需求、设计与架构，开始实现' if not attempt else f'接收验收反馈，第 {attempt} 次修复', stage='code' if not attempt else 'repair')
@@ -292,7 +304,7 @@ async def execute_team(run_id, owner, project_id, payload):
                 draft_files = files
                 changed_paths=studio.patch_paths(patch)
                 await role_event('engineer','增量修改完成，等待构建验证',kind='tool_result',tool='workspace.apply_patch',output={'files':[{'path':f['path'],'bytes':len(f['content'].encode())} for f in files if f['path'] in changed_paths],'deleted':patch.get('delete',[])})
-                documents['engineer'] = {'summary': str(patch.get('summary', '实现已完成'))[:2000], 'items': changed_paths,'handoff':str(patch.get('handoff',''))[:400], 'tests':patch.get('tests',[])}
+                documents['engineer'] = {'summary': str(patch.get('summary', '实现已完成'))[:2000], 'items': changed_paths,'handoff':str(patch.get('handoff','')), 'tests':patch.get('tests',[])}
                 await persist()
                 await role_event('engineer', '代码已交接，开始构建与开发自测', 'done', output=documents['engineer'])
                 await handoff('engineer','qa',documents['engineer'])
@@ -337,7 +349,7 @@ async def execute_team(run_id, owner, project_id, payload):
             if attempt >= quality.max_repairs:
                 await role_event('qa',f'达到自动修复上限（{quality.max_repairs} 次），升级领导协调范围、资源或外部依赖。','error',stage='repair',kind='handoff',recipient='leader',diagnostic=failure)
                 await role_event(active_role,'这一轮还未通过验收，已保留草稿和交接进度，可从工作看板继续。','error',stage='error',diagnostic=failure)
-                raise ValueError(('团队经过两次修复仍未通过验收：' if quality.max_repairs==2 else f'达到修复上限（{quality.max_repairs} 次）：') + failure) from exc
+                raise ValueError(f'达到修复上限（{quality.max_repairs} 次），仍未通过验收：' + failure) from exc
             await repair_order(failure,attempt+1)
             await dispatch('engineer')
     await studio.event(run_id, 'save', '团队验收通过，保存代码和构建产物')

@@ -319,6 +319,17 @@ async def start(owner, project_id, instruction, model, mode=None,temperature=.35
                     # more code, including failures caused by a faulty test suite.
                     if old_result.get('draft_files') and old_result.get('team', {}).get('engineer'):
                         resume_result['team'] = old_result['team']
+                        # Old default budgets otherwise survive indefinitely in
+                        # the saved leader document. Upgrade only legacy defaults;
+                        # preserve explicit strategy edits and current plans.
+                        board = old_payload.get('workflow', {})
+                        leader = resume_result['team'].get('leader', {})
+                        saved_policy = board.get('policy', leader.get('policy', {})).copy()
+                        if not board.get('repair_budget_version') and not board.get('policy_history') and saved_policy.get('max_repairs', 2) == 2:
+                            from services.team_workflow import MAX_REPAIRS
+                            saved_policy['max_repairs'] = MAX_REPAIRS
+                        if leader:
+                            leader['policy'] = saved_policy
                         resume_result['resume_stage'] = 'verification'
                         resume_result['team'].get('qa', {}).pop('verified', None)
                         # Older runs saved test inputs in their tool trace only.

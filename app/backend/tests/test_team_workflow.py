@@ -20,7 +20,7 @@ def test_strategy_changes_are_versioned_private_and_do_not_reset_delivery(client
     assert [c['id'] for c in board['columns']]==['backlog','ready','doing','review','verifying','acceptance','done']
     assert board['cards'][0]['blocked'] and board['cards'][0]['state']=='review'
     assert all(c['owner'] and c['tasks'] and c['output'] for c in board['cards'])
-    request={**board['policy'],'priority':'urgent','sla_minutes':20,'revision':board['revision'],'reason':'集中处理已确认的阻塞'}
+    request={**board['policy'],'priority':'urgent','sla_minutes':20,'max_repairs':30,'revision':board['revision'],'reason':'集中处理已确认的阻塞'}
     endpoint='/api/v1/studio/runs/'+rid+'/strategy'
     other,_=account(client)
     assert client.patch(endpoint,headers=other,json=request).status_code==404
@@ -30,11 +30,12 @@ def test_strategy_changes_are_versioned_private_and_do_not_reset_delivery(client
     assert client.patch(endpoint,headers=owner,json=request).status_code==409
     fresh=client.get('/api/v1/studio/runs/'+rid,headers=owner).json()
     assert fresh['result']['team']==run['result']['team']
+    assert fresh['result']['workflow']['policy']['max_repairs']==30
     assert fresh['result']['pending']==run['result']['pending']
     assert [c['state'] for c in fresh['result']['workflow']['cards']]==[c['state'] for c in board['cards']]
     assert fresh['result']['workflow']['policy_history'][0]['reason']==request['reason']
     assert all(c['lane']=='加急' for c in fresh['result']['workflow']['cards'])
-    for extra in ({'wip':0},{'min_tests':0},{'states':['anything']},{'reason':''}):
+    for extra in ({'wip':0},{'min_tests':0},{'max_repairs':31},{'states':['anything']},{'reason':''}):
         assert client.patch(endpoint,headers=owner,json={**request,'revision':1,**extra}).status_code==422
     client.delete('/api/v1/studio/runs/'+rid,headers=owner)
     assert client.patch(endpoint,headers=owner,json={**request,'revision':1}).status_code==409

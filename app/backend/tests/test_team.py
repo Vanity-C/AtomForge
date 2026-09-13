@@ -17,13 +17,13 @@ def wait_run(client, owner, run_id):
     pytest.fail('Team run did not complete')
 
 
-def fake_model(calls, reject=False, confirm=False):
+def fake_model(calls, reject=False, confirm=False, max_repairs=2):
     question={'kind':'user_requested','question':'用户要求先确认部署范围','options':[{'label':'自己使用','description':'当前用户使用'},{'label':'团队使用','description':'团队共享'}],'recommended':0,'reason':'用户明确要求先确认'}
     async def call(owner, project_id, run_id, model, stage, messages, **kwargs):
         context = json.loads(messages[-1]['content'])
         if stage == 'team_leader':
             if 'failure' in context:return {'summary':'Arrange repair','tasks':['Fix the reported issue']}
-            return {'goal':'counter','summary':'Coordinate counter delivery','stages':[{'role':role,'title':role,'tasks':['Implement counter scope'],'delivery':'verified output','gatekeeper':'qa' if role in {'engineer','qa'} else 'leader'} for role in ['product','design','architect','engineer','qa']]}
+            return {'goal':'counter','policy':{'max_repairs':max_repairs},'summary':'Coordinate counter delivery','stages':[{'role':role,'title':role,'tasks':['Implement counter scope'],'delivery':'verified output','gatekeeper':'qa' if role in {'engineer','qa'} else 'leader'} for role in ['product','design','architect','engineer','qa']]}
         calls.append((stage, context))
         if stage == 'team_product':
             return {'goal':'counter','tasks':['Build counter'],'acceptance':['increment works'],'questions':[question] if confirm else []}
@@ -84,7 +84,7 @@ def test_team_review_rejection_never_commits_and_retry_keeps_mode(client,monkeyp
     run=wait_run(client,owner,run_id)
     assert run['status']=='error'
     assert run['result']['draft_files'][0]['path']=='App.jsx'
-    assert '两次修复' in run['error']
+    assert '达到修复上限（2 次）' in run['error']
     assert [stage for stage,_ in calls].count('team_qa')==3
     assert client.get(f'/api/v1/af/projects/{p}',headers=owner).json()['project']['current_version']==0
     async def paused(*args,**kwargs):
