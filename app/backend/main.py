@@ -243,7 +243,7 @@ def frontend_file(path: str):
 @app.get("/{path:path}", include_in_schema=False)
 def frontend(path: str):
     # Explicit client-side routes only; unknown API/file paths remain real 404s.
-    if path in {"auth", "auth/callback", "auth/error", "dashboard", "settings", "account"} or path.startswith(("p/", "s/", "apps/")):
+    if path in {"auth", "auth/callback", "auth/error", "dashboard", "agents", "settings", "account"} or path.startswith(("p/", "s/", "apps/")):
         return frontend_file("index.html")
     return frontend_file(path)
 
