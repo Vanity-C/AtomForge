@@ -49,7 +49,7 @@ export default function Agents(){
   },[account]);
   const groups=config?.teams??[],agents=config?.agents??[];
   const currentGroup=groups.find(group=>group.id===config?.active_team_id)??groups[0];
-  const membersOf=(group?:AgentGroup)=>(group?.member_ids??[]).map(id=>agents.find(person=>person.id===id)).filter((person):person is AgentProfile=>!!person);
+  const membersOf=(group?:AgentGroup)=>(group?.member_ids??[]).map(id=>agents.find(person=>person.id===id)).filter((person):person is AgentProfile=>!!person).sort((a,b)=>Number(b.role==='leader')-Number(a.role==='leader'));
   const currentMembers=membersOf(currentGroup);
   const isDefaultGroup=groupDraft?.id==='default-team';
   const references=editing?groups.filter(group=>group.member_ids.includes(editing.id)):[];

@@ -22,7 +22,15 @@ export interface StudioRun {
   agents?:AgentTeam;
   id:string;project_id:number;mode?:'build'|'race'|'team';status:string;stage:string;error:string;server_time?:number;
   events:{stage:string;message:string;at:string;role?:string;recipient?:string;state?:string;kind?:string;output?:TeamOutput}[];
-  result:{error_code?:string;resume_stage?:string;pending?:PendingConfirmation;version?:number;summary?:string;draft_files?:GeneratedFile[];team?:Record<string,TeamOutput>;candidates?:{model:string;summary:string;files:GeneratedFile[];artifact:Artifact}[]};
+  result:{workflow?:DeliveryWorkflow|null;error_code?:string;resume_stage?:string;pending?:PendingConfirmation;version?:number;summary?:string;draft_files?:GeneratedFile[];team?:Record<string,TeamOutput>;candidates?:{model:string;summary:string;files:GeneratedFile[];artifact:Artifact}[]};
+}
+export interface StrategyPolicy {priority:string;wip:number;sla_minutes:number;max_repairs:number;min_tests:number}
+export interface DeliveryWorkflow {
+  version:string;revision:number;policy:StrategyPolicy;
+  columns:{id:string;name:string;entry:string;exit:string;output:string;next:string[]}[];
+  cards:{id:string;role:string;owner:string;owner_name:string;collaborators:string[];title:string;tasks:string[];acceptance:string[];output:string;gate:string;depends_on:string[];state:string;blocked:string|null;blocked_seconds:number|null;evidence:string|null;lane:string;cycle_seconds:number|null;overdue:boolean}[];
+  policy_history:{revision:number;at:number;reason:string;by:string;before:StrategyPolicy;after:StrategyPolicy}[];
+  metrics:{completed_packages:number;rework_count:number;elapsed_seconds:number;escaped_defect_rate:number|null};
 }
 export const studioUrl=(id:number,path:string)=>`/api/v1/studio/projects/${id}/${path}`;
 export const fetchRun=(id:string)=>invoke<StudioRun>({url:`/api/v1/studio/runs/${id}`});

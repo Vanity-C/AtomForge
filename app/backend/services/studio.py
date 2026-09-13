@@ -20,6 +20,7 @@ from services.generation import MODELS, active_run_limit
 from services.model_catalogue import validate_model, provider_for
 from services import codex_provider
 from services.leadership import Replan
+from services.browser_tests import TEST_GUIDANCE
 
 PATH = re.compile(r'^(?!.*(?:\.\.|\\))[a-zA-Z0-9_][a-zA-Z0-9_./-]*\.(?:jsx?|tsx?|css|json)$')
 ACTIVE = {'queued','running'}
@@ -38,6 +39,7 @@ React 和 hooks 也支持全局使用，但推荐显式 import。所有 CSS 会�
 只有云服务已启用时才能使用 AtomForge.db/auth；否则使用 localStorage。仅当 AI 开启时才能调用 AtomForge.ai.chat(prompt)，返回 {content}。没有配置的能力要如实提示，不得假装成功。禁止使用工作台的账号或 API 密钥。
 仅当 payments_enabled 为 true 时才能提供支付：AtomForge.payments.checkout() 返回 {url}，宿主会在预览上方展示“继续付款 · Stripe”链接。应用显示付款页面已准备好，使用该链接继续，不要在沙箱中跳转。status() 返回 {items:[{status,session_id}]}。支付状态必须查询后端，不能根据 URL 参数声称支付成功。
 不要生成 package.json、锁文件或构建脚本。'''
+ENGINEER = ENGINEER.replace('visible|click|fill|text', 'visible|click|fill|text|hidden|enabled|disabled|reload|clear_storage') + '\n' + TEST_GUIDANCE
 
 
 def merge_patch(base, patch):
@@ -136,6 +138,8 @@ async def get_run(owner, run_id):
         r=await db.get(StudioRun,run_id)
         if not r or r.owner!=str(owner): raise HTTPException(404,'任务不存在')
         result = json.loads(r.result)
+        from services.team_workflow import present
+        result['workflow']=present(json.loads(r.payload),r.status,r.error)
         if result.get('pending'):
             from services.checkpoints import normalize
             result['pending'] = normalize(result['pending'])
@@ -179,6 +183,7 @@ async def model_call(owner,project_id,run_id,model,stage,messages,max_tokens=120
     await check_budget(owner)
     from services.agent_profiles import snapshot, prompt_for, ROLE_IDS
     role=stage.removeprefix('team_').removeprefix('chat_')
+    if role=='test_diagnosis':role='qa'
     if role=='plan':role='leader'
     if role not in ROLE_IDS:role='engineer'
     messages=[dict(m) for m in messages]
@@ -204,6 +209,7 @@ async def model_call(owner,project_id,run_id,model,stage,messages,max_tokens=120
                         return await codex_provider.complete(model, current_messages)
                     return await client.chat.completions.create(model=model,messages=current_messages,max_tokens=max_tokens,temperature=temperature if not format_attempt else .1,extra_body={'thinking':{'type':'disabled'}},response_format={'type':'json_object'})
             role=stage.removeprefix('team_').removeprefix('chat_')
+            if role=='test_diagnosis':role='qa'
             if role=='plan':role='leader'
             if role in {'code','repair'}: role='engineer'
             response=await retry_transient(request,lambda attempt:event(run_id,'recovering',f'模型连接暂时不稳定，正在重试当前步骤（{attempt}/2），无需重新提交需求。',role=role,kind='activity',state='recovering'))
@@ -247,6 +253,7 @@ async def call_model(owner,project_id,run_id,model,stage,messages,max_tokens=120
     from services.leadership import apply_feedback
     await apply_feedback(run_id)
     role=stage.removeprefix('team_')
+    if role=='test_diagnosis':role='qa'
     if role in {'code','repair'}: role='engineer'
     if role=='plan':role='leader'
     kwargs={'agent_team':agent_team} if agent_team is not None else {}
@@ -259,7 +266,7 @@ async def checked_build(run_id, files, tests=None, role='qa'):
     from services.leadership import apply_feedback
     await apply_feedback(run_id)
     return await traced_tool(run_id,role,'runner.build_and_test',{'files':[f['path'] for f in files],'tests':tests or []},
-        lambda:retry_transient(lambda:runner_build(files,tests),lambda attempt:event(run_id,'recovering',f'验证连接暂未完成，正在重新连接（{attempt}/2）。代码已保存，不会重新生成。',role=role,kind='activity',state='recovering')),lambda r:{'ok':r.get('ok'),'logs':r.get('logs',[]),'error':r.get('error','')})
+        lambda:retry_transient(lambda:runner_build(files,tests),lambda attempt:event(run_id,'recovering',f'验证连接暂未完成，正在重新连接（{attempt}/2）。代码已保存，不会重新生成。',role=role,kind='activity',state='recovering')),lambda r:{'ok':r.get('ok'),'logs':r.get('logs',[]),'error':r.get('error',''),**({'failure':r['failure']} if r.get('failure') else {})})
 
 
 async def start(owner, project_id, instruction, model, mode=None,temperature=.35,interactive=True, retry_of=None):
@@ -308,9 +315,12 @@ async def start(owner, project_id, instruction, model, mode=None,temperature=.35
                     if old_result.get('draft_files'):
                         resume_result['draft_files'] = old_result['draft_files']
                     payload['previousError'] = previous.error
-                    if can_resume_verification(old_result, previous.error) and old_result.get('team', {}).get('engineer'):
+                    # A saved implementation should be checked before asking for
+                    # more code, including failures caused by a faulty test suite.
+                    if old_result.get('draft_files') and old_result.get('team', {}).get('engineer'):
                         resume_result['team'] = old_result['team']
                         resume_result['resume_stage'] = 'verification'
+                        resume_result['team'].get('qa', {}).pop('verified', None)
                         # Older runs saved test inputs in their tool trace only.
                         engineer = resume_result['team']['engineer']
                         if 'tests' not in engineer:

@@ -45,6 +45,42 @@ test('test protocol rejects oversized or malformed suites without silently dropp
     await assert.rejects(()=>check({},steps),/测试协议错误/);
   }
 });
+
+test('disabled input validation is asserted, persistence survives real reload, and storage stays isolated',async()=>{
+  const artifact=await compile([{path:'App.jsx',content:`export default function App(){const [name,setName]=React.useState('');const [saved,setSaved]=React.useState(()=>localStorage.getItem('habit')||'empty');return <main><input value={name} onChange={e=>setName(e.target.value)}/><button disabled={!name.trim()} onClick={()=>{localStorage.setItem('habit',name);setSaved(name)}}>Add</button><p>{saved}</p></main>}`}]);
+  const result=await check(artifact,[
+    {action:'disabled',selector:'button'},
+    {action:'fill',selector:'input',value:'   '},
+    {action:'disabled',selector:'button'},
+    {action:'fill',selector:'input',value:'Water'},
+    {action:'enabled',selector:'button'},
+    {action:'click',selector:'button'},
+    {action:'reload'},
+    {action:'text',selector:'p',value:'Water'},
+    {action:'disabled',selector:'button'},
+    {action:'clear_storage'},
+    {action:'reload'},
+    {action:'text',selector:'p',value:'empty'},
+    {action:'hidden',selector:'[data-does-not-exist]'},
+  ]);
+  assert.equal(result.ok,true,JSON.stringify(result));
+  const blocked=await check(artifact,[{action:'click',selector:'button'}]);
+  assert.equal(blocked.ok,false);
+  assert.deepEqual(blocked.failure,{kind:'interaction',step:1,action:'click',selector:'button',actual:'Add',disabled:true});
+  assert.match(blocked.error,/disabled/);
+  const fresh=await check(artifact,[{action:'text',selector:'p',value:'empty'}]);
+  assert.equal(fresh.ok,true,JSON.stringify(fresh));
+  const badState=await check(artifact,[{action:'enabled',selector:'button'}]);
+  assert.equal(badState.ok,false,'state assertions must fail, not silently pass');
+});
+
+test('reload detects applications that forgot persistence',async()=>{
+  const artifact=await compile([{path:'App.jsx',content:`export default function App(){const [n,setN]=React.useState(0);return <button onClick={()=>setN(n+1)}>{n}</button>}`}]);
+  const result=await check(artifact,[{action:'click',selector:'button'},{action:'reload'},{action:'text',selector:'button',value:'1'}]);
+  assert.equal(result.ok,false);
+  assert.equal(result.failure.kind,'assertion');
+  assert.equal(result.failure.actual,'0');
+});
 test('compile and exercise a React TypeScript application',async()=>{
   const a=await compile([{path:'App.tsx',content:`import {useState} from 'react'; export default function App(){const [n,setN]=useState<number>(0);return <button data-testid="count" onClick={()=>setN(n+1)}>{n}</button>}`}]);
   const r=await check(a,[{action:'click',selector:'[data-testid=count]'},{action:'text',selector:'[data-testid=count]',value:'1'}]);

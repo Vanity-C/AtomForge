@@ -6,7 +6,8 @@
  * the signed-in AtomForge user. The public share payload is the only anonymous
  * read path.
  */
-import { invoke } from '@/lib/sdk';
+import { invoke, onAuthChange } from '@/lib/sdk';
+import {createProjectThumbnailLoader} from '@/lib/projectThumbnailLoader';
 import {projectCollection, projectSession} from '@/lib/projectCollection';
 import type { GeneratedFile } from '@/lib/agent/codegen';
 import { languageOf } from '@/lib/agent/codegen';
@@ -79,14 +80,16 @@ export async function getProject(id: number): Promise<ProjectRecord> {
 }
 
 export interface ProjectThumbnail {
-  status: 'ready' | 'empty' | 'unbuilt' | 'unavailable' | 'changed';
+  status: 'ready' | 'empty' | 'unbuilt' | 'unavailable' | 'changed' | 'pending';
   version: number;
   src?: string;
 }
 
-export async function getProjectThumbnail(id: number): Promise<ProjectThumbnail> {
-  return invoke<ProjectThumbnail>({url: `/api/v1/af/projects/${id}/thumbnail`, timeoutMs: 150000});
-}
+export const projectThumbnailLoader = createProjectThumbnailLoader({
+  session: projectSession,
+  fetch: (id, cachedOnly) => invoke<ProjectThumbnail>({url: `/api/v1/af/projects/${id}/thumbnail${cachedOnly ? '?cached_only=true' : ''}`, timeoutMs: cachedOnly ? 20000 : 150000}),
+});
+onAuthChange(projectThumbnailLoader.syncSession);
 
 export async function createProject(input: {
   name: string;

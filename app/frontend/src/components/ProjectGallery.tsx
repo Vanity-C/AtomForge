@@ -7,19 +7,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { errorMessage, readToken } from '@/lib/sdk';
-import { getProjectThumbnail, updateProject, type ProjectRecord, type ProjectThumbnail } from '@/lib/projectStore';
+import { projectThumbnailLoader, updateProject, type ProjectRecord, type ProjectThumbnail } from '@/lib/projectStore';
 import '@/styles/project-gallery.css';
-
-// One cover request at a time; opening a gallery never launches a browser for
-// every project. Unmounted cards skip queued work, and only visible cards load.
-let coverQueue: Promise<unknown> = Promise.resolve();
-function queueCover(load: () => Promise<void>) {
-  coverQueue = coverQueue.then(load, load);
-}
 
 function Cover({project}: {project: ProjectRecord}) {
   const frame = useRef<HTMLDivElement>(null);
-  const [cover, setCover] = useState<ProjectThumbnail | null>(null);
+  const [cover, setCover] = useState<ProjectThumbnail | null>(() => projectThumbnailLoader.peek(project.id, project.current_version));
   const [loading, setLoading] = useState(false);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -27,30 +20,31 @@ function Cover({project}: {project: ProjectRecord}) {
     let requested = false;
     const session = readToken();
     const current = () => alive && readToken() === session;
-    setCover(null);
+    const cached = projectThumbnailLoader.peek(project.id, project.current_version);
+    setCover(cached);
     setLoading(false);
-    if (!project.current_version) return;
+    if (!project.current_version || cached) return;
     const observer = new IntersectionObserver(entries => {
       if (requested || !entries.some(entry => entry.isIntersecting)) return;
       requested = true;
       observer.disconnect();
       setLoading(true);
-      queueCover(async () => {
+      void (async () => {
         if (!current()) return;
         try {
-          const result = await getProjectThumbnail(project.id);
+          const result = await projectThumbnailLoader.load(project.id, project.current_version, current);
           if (current()) setCover(result.version === project.current_version ? result : {status: 'changed', version: result.version});
         } catch {
           if (current()) setCover({status: 'unavailable', version: project.current_version});
         } finally {
           if (current()) setLoading(false);
         }
-      });
+      })();
     }, {rootMargin: '160px'});
     if (frame.current) observer.observe(frame.current);
     return () => {alive = false; observer.disconnect();};
   }, [project.id, project.current_version, attempt]);
-  const ready = cover?.status === 'ready' && cover.src;
+  const ready = cover?.status === 'ready' && cover.version === project.current_version && cover.src;
   const failed = cover?.status === 'unavailable';
   return <div ref={frame} className={`project-cover ${ready ? 'has-cover' : ''}`}>
     <Link to={`/p/${project.id}`} className="project-cover-link" aria-label={`打开项目：${project.name}`}>

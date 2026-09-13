@@ -11,6 +11,13 @@ const {activeTeam,activeGroup,groupMembers,teamRoster,teamStages,conversationTar
 const agents=Object.values(FALLBACK_TEAM);
 const config=(members,extra=[])=>({agents:[...agents,...extra],active:Object.fromEntries(agents.map(agent=>[agent.role,agent.id])),teams:[DEFAULT_GROUP,{id:'custom',name:'精简团队',description:'',color:'blue',member_ids:members}],active_team_id:'custom',revision:3});
 
+test('leaders are displayed first without dropping or reordering other selected members',()=>{
+  const value=config(['default-qa','default-design','default-leader','default-engineer']);
+  assert.equal(DEFAULT_GROUP.member_ids[0],'default-leader');
+  assert.deepEqual(groupMembers(value).map(person=>person.id),['default-leader','default-qa','default-design','default-engineer']);
+  assert.equal(teamRoster(activeTeam(value))[0].profile.id,'default-leader');
+});
+
 test('a one-person team covers every stage without inventing unselected colleagues',()=>{
   const value=config(['default-design']);
   const snapshot=activeTeam(value);

@@ -27,7 +27,7 @@ MEMBER_PREFIX = 'member:'
 def default_group():
     return {'id': DEFAULT_TEAM_ID, 'name': '默认团队',
             'description': '六位默契伙伴，从想法到交付全程协作。', 'color': 'sage',
-            'member_ids': [a['id'] for a in DEFAULT_AGENTS]}
+            'member_ids': ['default-leader']+['default-'+role for role in ROLE_IDS if role!='leader']}
 
 
 def stage_assignments(members):
@@ -132,6 +132,7 @@ class AgentConfiguration(BaseModel):
             if len(set(group.member_ids)) != len(group.member_ids):raise ValueError('团队成员不能重复')
             if any(member not in agents for member in group.member_ids):
                 raise ValueError('智能体仍被团队引用，请先从团队中移除后再删除')
+            group.member_ids.sort(key=lambda mid: agents[mid].role != 'leader')
         if self.active_team_id not in groups:raise ValueError('当前团队不存在，请选择一个团队')
         self.active = stage_assignments([agents[mid].model_dump() for mid in groups[self.active_team_id].member_ids])
         return self
@@ -170,7 +171,7 @@ def active_team(config):
     agents={a['id']:a for a in config['agents']}
     config = migrate_groups(config)
     group = next(t for t in config['teams'] if t['id'] == config['active_team_id'])
-    members = [agents[mid] for mid in group['member_ids']]
+    members = sorted([agents[mid] for mid in group['member_ids']], key=lambda a: a['role'] != 'leader')
     stages = stage_assignments(members)
     return {**{role: deepcopy(agents[mid]) for role, mid in stages.items()},
             **{MEMBER_PREFIX + a['id']: deepcopy(a) for a in members}}
@@ -179,7 +180,7 @@ def active_team(config):
 def roster(team):
     """Return the ordered real members, including specialists sharing a role."""
     selected = [p for key, p in team.items() if key.startswith(MEMBER_PREFIX)]
-    return selected or list({p['id']: p for p in team.values()}.values())
+    return sorted(selected or list({p['id']: p for p in team.values()}.values()), key=lambda a: a['role'] != 'leader')
 
 
 def resolve_member(team, target):
@@ -200,11 +201,11 @@ def prompt_for(role, team):
     peers=[{k:p[k] for k in ('id','role','name','title','responsibilities')}
            for p in roster(team) if p['id'] != person['id']]
     assignments = {r: team[r]['name'] for r in ROLE_IDS if r in team}
-    next_role={'leader':'product','product':'leader','design':'leader','architect':'leader','engineer':'leader','qa':'leader'}[role]
+    next_role={'leader':'product','product':'design','design':'architect','architect':'engineer','engineer':'qa','qa':'engineer'}[role]
     return ('\n你的身份与表达方式使用以下专属智能体配置：'+json.dumps(public,ensure_ascii=False)+
             '\n实际协作成员：'+json.dumps(peers,ensure_ascii=False)+
             '\n本轮阶段负责人（同一位成员可承担多个阶段）：'+json.dumps(assignments,ensure_ascii=False)+
-            ('\n你负责制定调度单、协调专业成员，并向用户说明进展和结果。' if role=='leader' else '\n工作安排以团队领导的调度单为准。阶段完成或出现问题，向'+team[next_role]['name']+'汇报。')+'测试结论必须独立，不允许领导跳过验收。'+
+            ('\n你负责目标、优先级、资源和异常升级。固定交付顺序由系统执行，不逐站派工，不代替专业评审。' if role=='leader' else '\n按固定接口与'+team[next_role]['name']+'直接交接；缺陷由测试直接交给工程师。仅范围冲突、外部依赖或修复重试耗尽时升级领导，不例行向领导汇报。')+'测试结论必须独立，不允许领导跳过验收。'+
             '\n将性格体现在措辞、关注点和协作方式中，不要每次复述人设或开场白。用自然的第一人称，简洁、具体，适度表达关切。'
             '回应真实的前序交接与讨论：指出承接了谁的哪项决定、自己的判断，以及接下来需要谁做什么。'
             '出现分歧时说明依据与取舍，不捏造同事发言、不表演无意义闲聊，不声称自己是真人。'

@@ -7,8 +7,9 @@ from pydantic import BaseModel, Field, StrictBool, ValidationError, model_valida
 
 from core.database import db_manager
 from models.studio import StudioCloud, StudioRun
-from services import studio
+from services import studio, team_workflow as workflow
 from services.leadership import LeadershipPlan, PLAN_PROMPT
+from services.browser_tests import TEST_GUIDANCE, validate_tests
 
 
 class Option(BaseModel):
@@ -53,6 +54,13 @@ class Review(BaseModel):
     tests: list[dict] = Field(min_length=2, max_length=48)
 
 
+class TestDiagnosis(BaseModel):
+    model_config = {'extra': 'forbid'}
+    verdict: Literal['test_defect', 'application_defect']
+    reason: str = Field(min_length=1, max_length=2000)
+    tests: list[dict] = Field(default_factory=list, max_length=48)
+
+
 ROLES = {
     'leader': ('团队领导', PLAN_PROMPT),
     'product': ('产品经理', '你是产品经理。把用户当前需求整理成可交接的需求说明，尊重现有功能和云配置，不扩大范围。返回 JSON {"goal":"目标","tasks":["具体任务"],"acceptance":["可验证的验收标准"]}，最多8项，另返回 questions 数组（最多3个影响范围、数据或核心交互的待确认问题；需求已清楚则为空）。列出明确默认方案，不询问用户已说明的内容。不声称已执行。'),
@@ -87,20 +95,18 @@ def validate_review(raw):
     review = Review.model_validate(raw).model_dump()
     if review['approved'] and review['issues']:
         raise ValueError('测试工程师的通过结论与问题清单冲突')
-    if review['tests'][-1].get('action') not in {'visible','text'}:
-        raise ValueError('独立测试需要在操作后验证实际结果，最后一步必须为 visible 或 text 断言')
-    for test in review['tests']:
-        if test.get('action') not in {'visible', 'click', 'fill', 'text'}:
-            raise ValueError('测试工程师返回了不支持的测试动作')
-        if not isinstance(test.get('selector'), str) or not test['selector'].strip() or len(test['selector']) > 300:
-            raise ValueError('测试工程师返回了无效的测试选择器')
-        if test['action'] in {'fill', 'text'} and not isinstance(test.get('value'), str):
-            raise ValueError('测试步骤缺少输入或期望文字')
+    validate_tests(review['tests'])
     return review
 
 
+# Replace the older four-action contract so roles do not receive conflicting rules.
+ROLES['qa'] = (ROLES['qa'][0], ROLES['qa'][1].replace('visible|click|fill|text', 'visible|click|fill|text|hidden|enabled|disabled|reload|clear_storage')
+    .replace('测试只能使用 visible/click/fill/text 四种动作，text 为包含匹配。', '')
+    .replace('最后一步必须为 visible 或 text 断言', '最后一步必须为结果断言') + '\n' + TEST_GUIDANCE)
+
+
 async def execute_team(run_id, owner, project_id, payload):
-    from services.agent_profiles import snapshot,complete_team,roster,MEMBER_PREFIX,ROLE_IDS
+    from services.agent_profiles import snapshot,complete_team
     members=complete_team(payload.get('agents') or await snapshot(owner))
     async with db_manager.session() as db:
         saved = await db.get(StudioRun,run_id)
@@ -116,6 +122,40 @@ async def execute_team(run_id, owner, project_id, payload):
 
     async def persist():
         await studio.change(run_id, result={'team': documents, 'draft_files': draft_files})
+
+    test_corrections = 0
+
+    async def verify(files, tests, source):
+        """Triage an interaction/protocol failure once, without handing code back.
+
+        A correction is a fresh real execution, never a passed/skipped assertion.
+        Other failures still take the normal application-repair path.
+        """
+        nonlocal test_corrections
+        checked = await studio.checked_build(run_id, files, tests)
+        candidate = checked.get('failure', {}).get('kind') == 'interaction' or checked.get('error', '').startswith('测试协议错误')
+        if checked.get('ok') or not candidate or test_corrections >= 1:
+            return checked
+        test_corrections += 1
+        await role_event('qa', '交互测试未通过，先核对测试前置条件与源码；本次诊断不修改应用代码。', stage='test', kind='activity')
+        raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_test_diagnosis',
+            [{'role': 'system', 'content': '你是测试工程师，诊断交互步骤失败。仅当源码和已确认需求证明应用行为正确、测试前置条件或操作错误时返回 test_defect，并提供保留原验收目标的完整替代测试。真实缺陷、依据不足或业务结果断言错误返回 application_defect，不调整预期掩盖缺陷。不得删除失败场景，合法禁用行为要改成 disabled 断言，保留有效输入的成功路径。禁止返回或修改 files/edits/delete。只返回 JSON {"verdict":"test_defect|application_defect","reason":"引用源码和需求的具体证据","tests":[]}。\n' + TEST_GUIDANCE},
+             {'role': 'user', 'content': json.dumps({'requirements': documents['product'], 'solution': context.get('approvedSolution'), 'currentFiles': files, 'tests': tests, 'failure': checked}, ensure_ascii=False)}],
+            max_tokens=4200, temperature=.1)
+        try:
+            diagnosis = TestDiagnosis.model_validate(raw)
+            if diagnosis.verdict != 'test_defect':
+                await role_event('qa', diagnosis.reason, stage='test', kind='activity')
+                return checked
+            minimum = (await workflow.policy(run_id)).min_tests if source == 'qa' else 2
+            corrected = validate_tests(diagnosis.tests, minimum=minimum)
+        except (ValueError, ValidationError):
+            return checked
+        documents[source].setdefault('test_corrections', []).append({'reason': diagnosis.reason, 'before': tests, 'after': corrected, 'failure': checked.get('error')})
+        documents[source]['tests'] = corrected
+        await persist()
+        await role_event('qa', '测试脚本已修正，保留验收目标并重新执行；应用源码未改动。', stage='test', kind='activity', output={'summary': diagnosis.reason, 'tests': corrected})
+        return await studio.checked_build(run_id, files, corrected)
 
     async def role_event(role, message, state='running', stage=None, **extra):
         await studio.event(run_id, stage or role, message, role=role, state=state, **extra)
@@ -141,6 +181,7 @@ async def execute_team(run_id, owner, project_id, payload):
         manual_only = any(q.get('kind') in {'external_dependency', 'irreversible'} for q in questions)
         pending={'id':uuid.uuid4().hex,'key':key,'role':role,'title':title,'documents':output,'questions':questions,
             'choices': choices_for(questions), 'auto': {'paused': manual_only, 'deadline': None if manual_only else time.time() + TIMEOUT_SECONDS}}
+        await workflow.move(run_id,role,'review',blocked='等待用户回答必要问题',locked=True)
         await role_event(role,'请审阅'+title+'，确认或提出修改后再继续。','waiting',kind='confirmation',recipient='user')
         await studio.change(run_id,status='awaiting_input',stage=key,result={'team':documents,'draft_files':draft_files,'pending':pending})
         schedule(owner, run_id, pending)
@@ -153,7 +194,8 @@ async def execute_team(run_id, owner, project_id, payload):
     async def turn(role, context, schema, max_tokens=2600):
         from services.agent_chat import discussion_context
         context={**context,'userDiscussions':await discussion_context(owner,project_id)}
-        starts={'product':'我先理清目标和优先级，把需要解决的问题交代清楚。','design':f"{members['leader']['name']}，安排收到了。我会结合已有交接梳理页面和操作体验。",'architect':f"{members['leader']['name']}，我来结合需求与已有交接，明确组件、数据和实现步骤。",'qa':f"{members['engineer']['name']}，我来对照需求检查实现，再安排独立测试。"}
+        if role!='leader':await workflow.move(run_id,role,'doing','负责人直接拉取工作包')
+        starts={'product':'我先理清目标和验收标准，再直接交给设计伙伴。','design':f"{members['product']['name']}，需求已收到。我来补齐页面、状态和操作体验。",'architect':f"{members['design']['name']}，我来承接设计，明确组件、数据契约和实现步骤。",'qa':f"{members['engineer']['name']}，我来对照需求检查实现，再安排独立测试。"}
         await role_event(role, starts.get(role,'我接着处理这部分，先核对已有的交接内容。'), model=payload['model'],kind='plan')
         try:
             raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_'+role,
@@ -176,24 +218,22 @@ async def execute_team(run_id, owner, project_id, payload):
             raise
         documents[role] = output
         await persist()
+        if role!='leader':await workflow.move(run_id,role,'review','结构化产出已保存，等待阶段门禁')
         await role_event(role, output.get('summary') or output.get('goal') or '产出已交接', 'running' if role == 'qa' else 'done', output=output)
         return output
 
     async def dispatch(role):
         assignment=next(s for s in documents['leader']['stages'] if s['role']==role)
         context['assignment']=assignment
-        await role_event('leader',f"{members[role]['name']}，请负责「{assignment['title']}」："+'；'.join(assignment['tasks']),kind='handoff',recipient=role,output=assignment)
+        context['qualityPolicy']=(await workflow.policy(run_id)).model_dump()
+        # Assignment is shared context; specialist handoffs drive the workflow.
 
     async def repair_order(failure, attempt):
-        await role_event('qa','验收尚未通过，已把问题与复现信息交给团队领导。','recovering',stage='repair',kind='handoff',recipient='leader',diagnostic=failure)
-        raw=await studio.call_model(owner,project_id,run_id,payload['model'],'team_leader',[
-            {'role':'system','content':'你是团队领导。根据独立验收的真实问题安排本轮修复，不能忽略或推翻测试。返回 JSON {"summary":"调整说明","tasks":["交给工程师的具体修复任务"]}。只调整本次问题，不扩大范围。'},
-            {'role':'user','content':json.dumps({'request':context['request'],'plan':documents['leader'],'review':documents.get('qa'),'failure':failure,'currentFiles':files},ensure_ascii=False)}],max_tokens=1800)
-        order=Document.model_validate({'summary':raw.get('summary'),'items':raw.get('tasks')}).model_dump()
-        documents['leader'].setdefault('adjustments',[]).append({'attempt':attempt,**order})
-        context['leaderAdjustment']=order
+        order={'summary':'依据独立测试证据修复，不扩大范围','items':[failure], 'attempt':attempt}
+        if 'qa' in documents:documents['qa'].pop('verified',None)
+        context['repairRequest']=order
         await persist()
-        await role_event('leader',order['summary'],'running',stage='repair',kind='handoff',recipient='engineer',output=order)
+        await role_event('qa','验收未通过，复现信息直接交给工程师修复。','recovering',stage='repair',kind='handoff',recipient='engineer',diagnostic=failure,output=order)
 
     context = {'request': payload['instruction'], 'history': payload['history'], 'currentFiles': payload['files'], 'cloud': config, 'handoffs': documents,'userDecisions':payload.get('decisions',[])}
     from services.agent_chat import decision_context
@@ -202,47 +242,40 @@ async def execute_team(run_id, owner, project_id, payload):
     if latest_feedback:
         context['originalRequest']=payload['instruction']
         context['request']=latest_feedback
-    assigned_ids={members[role]['id'] for role in ROLE_IDS}
-    advisors=[person for person in roster(members) if person['id'] not in assigned_ids]
-    if advisors:
-        advice=documents.setdefault('member_advice',{})
-        for person in advisors:
-            if person['id'] in advice:continue
-            target=MEMBER_PREFIX+person['id']
-            await role_event(target,'我先从自己的专长出发，给本轮任务补充建议。',kind='activity',agent=person)
-            raw=await studio.call_model(owner,project_id,run_id,payload['model'],'team_'+person['role'],[
-                {'role':'system','content':'你是本轮已选团队的协作成员。根据自己的专长为团队领导提出具体建议、风险或验收要点，帮助制定本轮安排。返回 JSON {"summary":"简短建议概述","items":["具体建议"]}。本轮仅提供分析建议，不声称已经修改代码或执行测试。'},
-                {'role':'user','content':json.dumps(context,ensure_ascii=False)}],max_tokens=1800,
-                agent_team={**members,person['role']:person},event_role=target)
-            advice[person['id']]={'agent':person,**Document.model_validate(raw).model_dump()}
-            await persist()
-            await role_event(target,advice[person['id']]['summary'],'done',kind='handoff',recipient='leader',agent=person,output=advice[person['id']])
-        context['memberAdvice']=advice
+    # Additional members are named collaborators, not mandatory pre-flight
+    # model calls. Specific consultations remain available through role chat.
     if 'leader' not in documents:
         await role_event('leader','收到需求。我先拆分任务、安排负责人和把关人，再带团队推进。',kind='activity',recipient='user')
         await turn('leader',context,lambda r:LeadershipPlan.model_validate(r).model_dump(),3200)
+    documents['leader']['stages']=LeadershipPlan.model_validate(documents['leader']).model_dump()['stages']
+    await workflow.initialize(run_id,documents['leader'],members,documents)
     if 'product' not in documents:
         await dispatch('product')
         await turn('product', context, lambda r: Brief.model_validate(r).model_dump())
-        await handoff('product','leader',documents['product'])
-    if await checkpoint('requirements','leader','需求与验收标准',{'product':documents['product']}): return
+        await handoff('product','design',documents['product'])
+    if await checkpoint('requirements','product','需求与验收标准',{'product':documents['product']}): return
+    await workflow.move(run_id,'product','done','需求、任务及验收标准格式有效，必要问题已解决',acceptance=documents['product']['acceptance'])
     # Keep the original prompt in the durable payload, not as a competing downstream spec.
     context['request']=documents['product']['goal']
     context.pop('originalRequest',None)
     context['approvedRequirements']=documents['product']
     context['history']=[]
+    documents['leader']['stages']=LeadershipPlan.model_validate(documents['leader']).model_dump()['stages']
     for assignment in documents['leader']['stages']:
         role=assignment['role']
         if role in {'design','architect'} and role not in documents:
             await dispatch(role)
             await turn(role,context,lambda r:Document.model_validate(r).model_dump())
-            await handoff(role,'leader',documents[role])
-    if await checkpoint('solution','leader','设计与开发方案',{'design':documents['design'],'architect':documents['architect']}): return
+            await handoff(role,'architect' if role=='design' else 'engineer',documents[role])
+        if role=='design':await workflow.move(run_id,'design','done','设计规范已保存；最终体验由独立测试验证')
+    if await checkpoint('solution','architect','设计与开发方案',{'design':documents['design'],'architect':documents['architect']}): return
+    await workflow.move(run_id,'architect','done','技术方案已保存，必要的外部依赖已确认')
     context['approvedSolution']={'design':documents['design'],'architect':documents['architect']}
     if not resume_verification: await dispatch('engineer')
     files = draft_files
     failure = payload.get('previousError', '')
     for attempt in range(3):
+        await workflow.move(run_id,'engineer','doing','实现工作包' if not attempt else '依据测试证据返工')
         if not (resume_verification and attempt == 0):
             await role_event('engineer', '接收需求、设计与架构，开始实现' if not attempt else f'接收验收反馈，第 {attempt} 次修复', stage='code' if not attempt else 'repair')
         active_role = 'engineer'
@@ -262,42 +295,55 @@ async def execute_team(run_id, owner, project_id, payload):
                 documents['engineer'] = {'summary': str(patch.get('summary', '实现已完成'))[:2000], 'items': changed_paths,'handoff':str(patch.get('handoff',''))[:400], 'tests':patch.get('tests',[])}
                 await persist()
                 await role_event('engineer', '代码已交接，开始构建与开发自测', 'done', output=documents['engineer'])
-                await handoff('engineer','leader',documents['engineer'])
+                await handoff('engineer','qa',documents['engineer'])
             await dispatch('qa')
+            await workflow.move(run_id,'engineer','review','代码与开发自测输入已保存')
             active_role = 'qa'
             await role_event('qa', '运行构建与开发自测', stage='test')
-            checked = await studio.checked_build(run_id, files, patch.get('tests', []))
+            checked = await verify(files, patch.get('tests', []), 'engineer')
             for line in checked.get('logs', []):
                 await role_event('qa', line, stage='test')
             if not checked['ok']:
                 raise ValueError(checked.get('error', '构建或开发自测未通过'))
             if resume_verification and attempt == 0 and documents.get('qa',{}).get('approved'):
                 review = validate_review(documents['qa'])
+                await workflow.move(run_id,'qa','doing','继续已保存的独立验证')
+                await workflow.move(run_id,'qa','review','复用独立审查报告')
             else:
                 review = await turn('qa', {**context, 'currentFiles': files, 'buildLogs': checked.get('logs', [])}, validate_review, 3000)
             if not review['approved']:
                 raise ValueError('独立验收要求修复：' + '; '.join(review['issues'] or [review['summary']]))
+            quality=await workflow.policy(run_id)
+            if len(review['tests'])<quality.min_tests:raise ValueError(f'战略门禁要求至少 {quality.min_tests} 个独立测试步骤，请补足核心操作与结果断言')
+            await workflow.move(run_id,'engineer','verifying','开发自测与独立源码审查通过，执行独立验证')
+            await workflow.move(run_id,'qa','verifying','独立审查通过，执行测试用例')
             await role_event('qa', '代码审查通过，执行测试工程师编写的独立测试', stage='test')
-            checked = await studio.checked_build(run_id, files, review['tests'])
+            checked = await verify(files, review['tests'], 'qa')
             for line in checked.get('logs', []):
                 await role_event('qa', line, stage='test')
             if not checked['ok']:
                 raise ValueError(checked.get('error', '独立浏览器测试未通过'))
             documents['qa']['verified'] = True
+            await workflow.move(run_id,'qa','acceptance','独立浏览器测试实际执行通过')
+            await workflow.move(run_id,'qa','done','独立审查与执行证据已保存')
+            await workflow.move(run_id,'engineer','acceptance','独立 QA 通过，等待保存基线版本')
             await persist()
             await role_event('qa', '独立审查与浏览器测试通过，交付验收完成', 'done', output=documents['qa'])
             break
         except (ValueError, ValidationError) as exc:
             if isinstance(exc,studio.OutputLimitError): raise
             failure = str(exc)[:5000]
-            if attempt == 2:
+            quality=await workflow.policy(run_id)
+            if attempt >= quality.max_repairs:
+                await role_event('qa',f'达到自动修复上限（{quality.max_repairs} 次），升级领导协调范围、资源或外部依赖。','error',stage='repair',kind='handoff',recipient='leader',diagnostic=failure)
                 await role_event(active_role,'这一轮还未通过验收，已保留草稿和交接进度，可从工作看板继续。','error',stage='error',diagnostic=failure)
-                raise ValueError('团队经过两次修复仍未通过验收：' + failure) from exc
+                raise ValueError(('团队经过两次修复仍未通过验收：' if quality.max_repairs==2 else f'达到修复上限（{quality.max_repairs} 次）：') + failure) from exc
             await repair_order(failure,attempt+1)
             await dispatch('engineer')
     await studio.event(run_id, 'save', '团队验收通过，保存代码和构建产物')
     summary = documents['engineer']['summary']
     result = {'files': files, 'summary': summary, 'artifact': checked['artifact'], 'model': payload['model']}
     version = await studio.commit_result(owner, project_id, payload['base_version'], result, run_id)
+    await workflow.move(run_id,'engineer','done','验收版本已保存：v'+str(version))
     await role_event('leader',summary+'；'+members['qa']['name']+' 已完成独立验收，我已安排保存为 v'+str(version)+'。你可以继续把反馈交给我。','done',kind='summary',recipient='user')
     await studio.change(run_id, status='done', stage='done', result={'version': version, 'summary': summary, 'plan': documents['product'], 'team': documents})

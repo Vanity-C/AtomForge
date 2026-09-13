@@ -270,7 +270,7 @@ def test_same_role_colleague_has_own_chat_identity(client, monkeypatch):
         json={'role': 'member:default-design', 'content': 'hello'}).status_code == 400
 
 
-def test_extra_selected_colleague_really_contributes_to_team_generation(client, monkeypatch):
+def test_extra_selected_colleague_is_on_card_without_mandatory_leader_consultation(client, monkeypatch):
     owner, _ = account(client)
     pid = project(client, owner, mode='team')
     data = body(client.get(URL, headers=owner).json())
@@ -287,7 +287,7 @@ def test_extra_selected_colleague_really_contributes_to_team_generation(client, 
             called.append('specialist')
             return {'summary': '先确认边界', 'items': ['明确空状态行为']}
         if args[4] == 'team_leader':
-            assert context['memberAdvice']['specialist']['summary'] == '先确认边界'
+            assert 'memberAdvice' not in context
             called.append('leader')
         return await base(*args, **kwargs)
     async def build(*args, **kwargs): return {'ok': True, 'artifact': {'js': 'ok', 'css': ''}, 'logs': []}
@@ -297,6 +297,7 @@ def test_extra_selected_colleague_really_contributes_to_team_generation(client, 
         json={'instruction': 'counter', 'mode': 'team', 'interactive': False}).json()['id']
     run = wait_run(client, owner, rid)
     assert run['status'] == 'done', run
-    assert called == ['specialist', 'leader']
-    assert run['result']['team']['member_advice']['specialist']['agent']['name'] == 'Specialist'
-    assert any(event.get('role') == 'member:specialist' and event.get('kind') == 'handoff' for event in run['events'])
+    assert called == ['leader']
+    engineer=next(card for card in run['result']['workflow']['cards'] if card['role']=='engineer')
+    assert 'specialist' in engineer['collaborators']
+    assert not any(event.get('role') == 'member:specialist' for event in run['events'])

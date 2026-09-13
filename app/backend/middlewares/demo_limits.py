@@ -21,7 +21,7 @@ class DemoLimits:
             limit = 6_000_000 if scope['path']=='/api/v1/studio/agents' and scope['method']=='PUT' else 2_000_000
             if length > limit:
                 return await JSONResponse({'detail':'请求内容过大'},413)(scope,receive,send)
-        if scope['method'] == 'POST' and (scope['path'] in {'/api/v1/af-auth/login','/api/v1/af-auth/register'} or scope['path'].startswith('/api/v1/af-auth/oauth/') and scope['path'].endswith('/start')):
+        if scope['method'] == 'POST' and (scope['path'] in {'/api/v1/af-auth/login','/api/v1/af-auth/register','/api/v1/af-auth/password'} or scope['path'].startswith('/api/v1/af-auth/oauth/') and scope['path'].endswith('/start')):
             now = time.monotonic()
             while self.auth_requests and now - self.auth_requests[0][0] >= 60:
                 self.auth_requests.popleft()

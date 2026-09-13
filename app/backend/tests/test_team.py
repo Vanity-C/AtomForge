@@ -63,8 +63,10 @@ def test_team_handoffs_and_independent_test_failure_repairs_before_commit(client
     assert 'Independent click failed' in calls[5][1]['previousError']
     assert checks[0]==[] and len(checks[1])==2 and len(checks)==4
     assert run['result']['team']['qa']['verified'] is True
-    assert run['result']['team']['leader']['adjustments'][0]['items']==['Fix the reported issue']
-    assert calls[5][1]['leaderAdjustment']['items']==['Fix the reported issue']
+    assert 'adjustments' not in run['result']['team']['leader']
+    assert calls[5][1]['repairRequest']['items']==['Independent click failed']
+    assert run['result']['workflow']['metrics']['rework_count']==1
+    assert all(c['state']=='done' for c in run['result']['workflow']['cards'])
     assert set(run['result']['team'])=={'leader','product','design','architect','engineer','qa'}
     assert len(client.get(f'/api/v1/af/projects/{p}/versions',headers=owner).json()['items'])==1
     restored=client.get('/api/v1/studio/runs/'+run_id,headers=owner).json()
@@ -169,6 +171,60 @@ def test_team_rejects_invalid_qa_protocol(invalid):
         validate_review(invalid)
 
 
+def test_review_supports_disabled_and_real_reload_without_selectors():
+    from services.team import validate_review
+    review = validate_review({'approved':True,'summary':'source reviewed','issues':[], 'tests':[
+        {'action':'disabled','selector':'button'}, {'action':'reload'},
+        {'action':'clear_storage'}, {'action':'reload'}, {'action':'hidden','selector':'.habit'}]})
+    assert len(review['tests']) == 5
+
+
+def test_invalid_interaction_is_corrected_without_code_repair_and_still_requires_qa(client, monkeypatch):
+    owner,_=account(client);p=project(client,owner,mode='team');calls=[];checks=[];diagnoses=[]
+    base=fake_model(calls)
+    corrected=[{'action':'disabled','selector':'button'},{'action':'text','selector':'h1','value':'counter'}]
+    async def model(*args,**kwargs):
+        if args[4]=='team_test_diagnosis':
+            diagnoses.append(json.loads(args[5][-1]['content']))
+            return {'verdict':'test_defect','reason':'empty input intentionally disables submit in source and requirements','tests':corrected}
+        return await base(*args,**kwargs)
+    async def build(files,tests=None):
+        checks.append((files,tests))
+        if len(checks)==1:return {'ok':False,'error':'button disabled','failure':{'kind':'interaction','action':'click','disabled':True},'logs':[]}
+        return {'ok':True,'artifact':{'js':'verified','css':''},'logs':['PASS']}
+    monkeypatch.setattr(studio,'model_call',model);monkeypatch.setattr(studio,'runner_build',build)
+    rid=client.post(f'/api/v1/studio/projects/{p}/runs',headers=owner,json={'instruction':'counter','mode':'team','interactive':False}).json()['id']
+    run=wait_run(client,owner,rid)
+    assert run['status']=='done',run
+    assert len(diagnoses)==1 and len(checks)==3
+    assert checks[0][0]==checks[1][0]==checks[2][0]
+    assert checks[1][1]==corrected
+    assert not any(s=='team_repair' for s,_ in calls)
+    assert run['result']['team']['engineer']['test_corrections'][0]['after']==corrected
+    assert run['result']['team']['qa']['verified'] is True
+    assert run['result']['workflow']['metrics']['rework_count']==0
+
+
+@pytest.mark.parametrize('verdict',['application_defect','test_defect'])
+def test_test_diagnosis_never_bypasses_failed_execution_or_loops(client,monkeypatch,verdict):
+    owner,_=account(client);p=project(client,owner,mode='team');calls=[];diagnoses=[]
+    base=fake_model(calls)
+    async def model(*args,**kwargs):
+        if args[4]=='team_test_diagnosis':
+            diagnoses.append(True)
+            return {'verdict':verdict,'reason':'specific source evidence','tests':[{'action':'visible','selector':'h1'},{'action':'text','selector':'h1','value':'counter'}]}
+        return await base(*args,**kwargs)
+    async def build(files,tests=None):
+        return {'ok':False,'error':'interaction still fails','failure':{'kind':'interaction','action':'click'}}
+    monkeypatch.setattr(studio,'model_call',model);monkeypatch.setattr(studio,'runner_build',build)
+    rid=client.post(f'/api/v1/studio/projects/{p}/runs',headers=owner,json={'instruction':'counter','mode':'team','interactive':False}).json()['id']
+    run=wait_run(client,owner,rid)
+    assert run['status']=='error',run
+    assert len(diagnoses)==1
+    assert [s for s,_ in calls].count('team_repair')==2
+    assert client.get(f'/api/v1/af/projects/{p}/versions',headers=owner).json()['items']==[]
+
+
 @pytest.mark.parametrize('preference',[False,True])
 def test_clear_request_and_routine_preferences_do_not_block(client,monkeypatch,preference):
     owner,_=account(client); p=project(client,owner,mode='team'); calls=[]
@@ -200,9 +256,9 @@ def test_retry_resumes_draft_and_approved_handoffs(client,monkeypatch):
     next_id=client.post('/api/v1/studio/runs/'+rid+'/retry',headers=owner).json()['id']
     done=wait_run(client,owner,next_id)
     assert done['status']=='done',done
-    assert [stage for stage,_ in calls]==['team_code','team_qa']
+    assert [stage for stage,_ in calls]==['team_qa']
     assert calls[0][1]['currentFiles'][0]['path']=='App.jsx'
-    assert 'specific failing assertion' in calls[0][1]['previousError']
+    assert done['result']['team']['engineer']==failed['result']['team']['engineer']
 
 
 def test_malformed_handoff_is_repaired_and_nine_tasks_are_supported(client,monkeypatch):

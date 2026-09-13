@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional
 import bcrypt
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,6 +126,7 @@ def create_session_token(user: Af_users) -> Dict[str, Any]:
     expires_at = now + timedelta(days=TOKEN_TTL_DAYS)
     claims = {
         "sub": str(user.id),
+        "ver": user.session_version or 0,
         "email": user.email,
         "name": user.display_name,
         "aud": TOKEN_AUDIENCE,
@@ -164,6 +165,7 @@ def public_profile(user: Af_users) -> Dict[str, Any]:
         "display_name": user.display_name,
         "username": user.username or user.display_name,
         "avatar_url": user.avatar_data or "",
+        "has_password": bool(user.password_hash),
         "created_at": user.created_at.isoformat() if user.created_at else "",
         "last_login_at": user.last_login_at or "",
     }
@@ -255,4 +257,24 @@ class AfAuthService:
         except IntegrityError:
             await self.db.rollback()
             raise HTTPException(409, '用户名或邮箱已被占用，请更换后重试')
+        return user
+
+    async def change_password(self, user: Af_users, current_password: str, new_password: str) -> Af_users:
+        if user.password_hash and not verify_password(current_password, user.password_hash):
+            # A wrong password is a form error, not an expired session.
+            raise HTTPException(400, '当前密码不正确，请重新输入')
+        validate_password_strength(new_password)
+        if verify_password(new_password, user.password_hash):
+            raise HTTPException(400, '新密码不能与当前密码相同')
+        previous_hash, previous_version = user.password_hash, user.session_version
+        result = await self.db.execute(update(Af_users).where(
+            Af_users.id == user.id,
+            Af_users.password_hash == previous_hash,
+            Af_users.session_version == previous_version,
+        ).values(password_hash=hash_password(new_password), session_version=previous_version + 1))
+        if result.rowcount != 1:
+            await self.db.rollback()
+            raise HTTPException(409, '密码已发生变化，请重新登录后再试')
+        await self.db.commit()
+        await self.db.refresh(user)
         return user

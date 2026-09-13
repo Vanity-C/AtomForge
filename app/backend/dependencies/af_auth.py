@@ -56,6 +56,8 @@ async def get_optional_af_user(
     user = await service.find_by_id(user_id)
     if user is None or (user.status or "active") != "active":
         return None
+    if payload.get('ver', 0) != user.session_version:
+        return None
     return user
 
 
@@ -90,4 +92,6 @@ async def get_af_user(
         )
     if (user.status or "active") != "active":
         raise HTTPException(status_code=403, detail="该账号已被停用")
+    if payload.get('ver', 0) != user.session_version:
+        raise HTTPException(status_code=401, detail="密码已更新，请重新登录")
     return user

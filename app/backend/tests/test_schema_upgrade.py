@@ -48,6 +48,7 @@ asyncio.run(initialize_database())
         assert result.returncode == 0, result.stderr
     with sqlite3.connect(database) as db:
         rows = db.execute('SELECT id,email,password_hash,display_name,username,username_key FROM af_users ORDER BY id').fetchall()
+        assert db.execute('SELECT session_version FROM af_users').fetchall() == [(0,)] * 4
         assert rows[0] == (1, 'one@example.test', 'hash-one', 'Alice', 'Alice', 'alice')
         assert rows[1][4] == 'ALICE_2'
         assert len({r[5] for r in rows}) == 4

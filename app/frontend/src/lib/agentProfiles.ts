@@ -10,7 +10,7 @@ export const ROLE_LABELS:Record<AgentRole,string>={leader:'领导',product:'产�
 export const FALLBACK_TEAM:AgentTeam=Object.fromEntries(TEAM_ROLES.map(r=>[r.id,{id:'default-'+r.id,role:r.id,name:r.alias,title:r.name,responsibilities:r.task,personality:r.equipment,greeting:r.greeting,avatar:'',avatar_style:r.id}]));
 const ASSIGNMENT_ORDER:AgentRole[]=['product','design','architect','engineer','qa','leader'];
 /** Initial roster only; a saved default-team is as customizable as any other team. */
-export const DEFAULT_GROUP:AgentGroup={id:'default-team',name:'默认团队',description:'六位默契伙伴，从想法到交付全程协作。',color:'sage',member_ids:ASSIGNMENT_ORDER.map(role=>'default-'+role)};
+export const DEFAULT_GROUP:AgentGroup={id:'default-team',name:'默认团队',description:'六位默契伙伴，从想法到交付全程协作。',color:'sage',member_ids:['default-leader',...ASSIGNMENT_ORDER.filter(role=>role!=='leader').map(role=>'default-'+role)]};
 
 /** Compatibility for an already cached or older server response. */
 export function normalizeAgentConfiguration(config:AgentConfiguration):AgentConfiguration {
@@ -27,7 +27,7 @@ export function normalizeAgentConfiguration(config:AgentConfiguration):AgentConf
 export const activeGroup=(config:AgentConfiguration):AgentGroup=>config.teams?.find(group=>group.id===config.active_team_id)||config.teams?.[0]||DEFAULT_GROUP;
 export function groupMembers(config:AgentConfiguration,group:AgentGroup=activeGroup(config)):AgentProfile[] {
   const agents=new Map(config.agents.map(agent=>[agent.id,agent]));
-  return [...new Set(group.member_ids)].map(id=>agents.get(id)).filter((agent):agent is AgentProfile=>!!agent);
+  return [...new Set(group.member_ids)].map(id=>agents.get(id)).filter((agent):agent is AgentProfile=>!!agent).sort((a,b)=>Number(b.role==='leader')-Number(a.role==='leader'));
 }
 
 export function activeTeam(config:AgentConfiguration):AgentTeam {
@@ -55,7 +55,7 @@ export function teamRoster(team:AgentTeam){
   const entries=Object.entries(team).filter(([,agent])=>!!agent);
   const roster=entries.filter(([id])=>id.startsWith('member:'));
   const seen=new Set<string>();
-  return (roster.length?roster:entries).filter(([,agent])=>{if(seen.has(agent.id))return false;seen.add(agent.id);return true;}).map(([id,agent])=>displayAgent(agent,id));
+  return (roster.length?roster:entries).filter(([,agent])=>{if(seen.has(agent.id))return false;seen.add(agent.id);return true;}).sort(([,a],[,b])=>Number(b.role==='leader')-Number(a.role==='leader')).map(([id,agent])=>displayAgent(agent,id));
 }
 export function teamStages(team:AgentTeam){
   const legacy=!Object.keys(team).some(id=>id.startsWith('member:'));

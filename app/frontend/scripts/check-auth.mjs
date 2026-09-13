@@ -56,28 +56,67 @@ try{
  const denied=await browser.newPage({viewport:{width:1440,height:1000}});await setup(denied);await denied.goto(origin+'/auth/callback?error='+encodeURIComponent('授权已取消，请重新选择登录方式'));
  await expect(denied.getByRole('heading',{name:'授权尚未完成'})).toBeVisible();await expect(denied.getByRole('link',{name:'返回登录 →'})).toBeVisible();await denied.close();
  if(starts.length!==2||starts.some(s=>s.data.redirect!=='/p/5'||s.data.purpose!=='login')||exchanges.length!==2)throw Error('OAuth handoff mismatch');
- for(const confirm of [true,false]){
+ for(const provider of ['github','gitee','netlify'])for(const confirm of [true,false]){
+  const name={github:'GitHub',gitee:'Gitee',netlify:'Netlify'}[provider];
   const tab=await browser.newPage({viewport:{width:1440,height:1000}});await setup(tab);
   await tab.addInitScript(()=>localStorage.setItem('atomforge.session.token','isolated-auth-token'));
   let resolves=0;
-  await tab.route('**/oauth/exchange',route=>route.fulfill({json:{status:'confirmation_required',provider:'github',login:'octo',target_name:'当前测试账号'}}));
+  await tab.route('**/oauth/exchange',route=>route.fulfill({json:{status:'confirmation_required',provider,login:'octo',target_name:'当前测试账号'}}));
   await tab.route('**/oauth/transfer',route=>{
     const data=route.request().postDataJSON();resolves++;
     if(data.confirm!==confirm||route.request().headers()['x-atomforge-token']!=='isolated-auth-token')throw Error('Transfer must carry current user and explicit decision');
-    if(confirm&&resolves===1)return route.fulfill({status:409,json:{detail:'原账号正在使用 GitHub 发布项目，请等待发布完成后再次确认'}});
+    if(confirm&&resolves===1)return route.fulfill({status:409,json:{detail:`原账号正在使用 ${name} 发布项目，请等待发布完成后再次确认`}});
     return route.fulfill({json:{redirect:'/account',transferred:confirm}});
   });
   await tab.goto(origin+'/auth/callback?ticket=isolated-transfer-'+confirm+'-1234567890');
-  try{await expect(tab.getByRole('heading',{name:'将 GitHub 连接到此账号？'})).toBeVisible();}
+  try{await expect(tab.getByRole('heading',{name:`将 ${name} 连接到此账号？`})).toBeVisible();}
   catch(error){console.error('Transfer page:',tab.url(),await tab.locator('body').innerText(),errors);throw error;}
-  await expect(tab.getByText('GitHub @octo',{exact:true})).toBeVisible();
+  await expect(tab.getByText(name+' octo',{exact:true})).toBeVisible();
+  if(provider==='netlify')await expect(tab.getByText('确认后，原 AtomForge 账号将自动解绑，无法再使用此 Netlify 连接部署项目。已部署的网站保持不变。',{exact:true})).toBeVisible();
   if(resolves!==0)throw Error('Transfer happened without confirmation');
-  if(confirm)await tab.screenshot({path:'node_modules/.auth-check/transfer.png',fullPage:true});
+  if(confirm)await tab.screenshot({path:`node_modules/.auth-check/transfer-${provider}.png`,fullPage:true});
   const action=tab.getByRole('button',{name:confirm?'确认转移并连接':'取消，保留原绑定',exact:true});
   await action.click();
   if(confirm){await expect(tab.getByRole('alert')).toContainText('请等待发布完成');await action.click();}
   await tab.waitForURL('**/account');await tab.close();
  }
+ for(const hasPassword of [true,false]){
+  const tab=await browser.newPage({viewport:{width:hasPassword?1440:390,height:1000}});await setup(tab);
+  await tab.addInitScript(()=>localStorage.setItem('atomforge.session.token','isolated-auth-token'));
+  let changed=false,submissions=0;
+  await tab.route('**/af-auth/me',route=>route.fulfill({json:{user:{...user,has_password:hasPassword||changed}}}));
+  await tab.route('**/af-auth/password',route=>{
+    const data=route.request().postDataJSON();submissions++;
+    if(data.current_password==='wrong')return route.fulfill({status:400,json:{detail:'当前密码不正确，请重新输入'}});
+    if(data.new_password!=='NewPassword456!'||data.current_password!==(hasPassword?'OldPassword123!':''))throw Error('Unexpected password form payload');
+    changed=true;return route.fulfill({json:{access_token:'rotated-fixture-token',user:{...user,has_password:true}}});
+  });
+  await tab.goto(origin+'/account');
+  await expect(tab.getByRole('heading',{name:hasPassword?'修改密码':'设置登录密码',exact:true})).toBeVisible();
+  if(hasPassword)await tab.getByLabel('当前密码',{exact:true}).fill('wrong');
+  else await expect(tab.getByLabel('当前密码',{exact:true})).toHaveCount(0);
+  await tab.getByLabel('新密码',{exact:true}).fill('NewPassword456!');
+  await tab.getByLabel('确认新密码',{exact:true}).fill('Mismatch123!');
+  const submit=tab.getByRole('button',{name:hasPassword?'更新密码':'设置密码',exact:true});
+  await submit.click();await expect(tab.getByRole('alert')).toHaveText('两次输入的新密码不一致');
+  if(submissions)throw Error('Mismatched password must not be submitted');
+  await tab.getByLabel('确认新密码',{exact:true}).fill('NewPassword456!');
+  await tab.getByRole('button',{name:'显示新密码',exact:true}).click();
+  await expect(tab.getByLabel('新密码',{exact:true})).toHaveAttribute('type','text');
+  if(hasPassword){
+    await submit.click();await expect(tab.getByRole('alert')).toHaveText('当前密码不正确，请重新输入');
+    await expect(tab).toHaveURL(origin+'/account');
+    await tab.getByLabel('当前密码',{exact:true}).fill('OldPassword123!');
+  }
+  await submit.click();
+  await expect(tab.getByLabel('新密码',{exact:true})).toHaveValue('');
+  await expect(tab.getByLabel('新密码',{exact:true})).toHaveAttribute('type','password');
+  await expect(tab.getByLabel('当前密码',{exact:true})).toBeVisible();
+  if(!changed)throw Error('Password was not saved');
+  await tab.getByRole('heading',{name:'修改密码',exact:true}).scrollIntoViewIfNeeded();
+  await tab.screenshot({path:`node_modules/.auth-check/password-${hasPassword?'desktop':'mobile'}.png`,fullPage:true});
+  await tab.close();
+ }
  if(errors.length)throw Error(errors.join('\n'));
- console.log('PASS: login/register, OAuth exchanges, explicit GitHub transfer confirmation, cancellation and retry. All external responses isolated.');
+ console.log('PASS: login/register, OAuth exchanges, GitHub/Gitee/Netlify transfer confirmation/cancellation/retry, password change and first-time setup on desktop/mobile. All API responses isolated.');
 }finally{await browser.close();}

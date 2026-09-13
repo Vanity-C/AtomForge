@@ -122,3 +122,31 @@ def test_access_revoked_while_capture_runs_does_not_return_image(client, monkeyp
         return IMAGE
     monkeypatch.setattr(project_thumbnails, 'capture_artifact', capture)
     assert client.get(url, headers=viewer).status_code == 404
+
+
+def test_cached_probe_never_builds_or_captures_and_remains_private(client, monkeypatch):
+    owner, _ = account(client)
+    other, _ = account(client)
+    pid, url = saved_project(client, owner)
+    async def unexpected(*args):
+        raise AssertionError('A cached-only read must never use the runner')
+    monkeypatch.setattr(project_thumbnails, 'capture_artifact', unexpected)
+    monkeypatch.setattr(studio, 'runner_build', unexpected)
+    probe = url + '?cached_only=true'
+    # Source-only and legacy artifacts both return promptly without rendering.
+    assert client.get(probe, headers=owner).json() == {'status': 'pending', 'version': 1}
+    seed_artifact(client, pid)
+    assert client.get(probe, headers=owner).json() == {'status': 'pending', 'version': 1}
+    assert client.get(probe, headers=other).status_code == 404
+    assert client.get(probe).status_code == 401
+    async def fill():
+        async with db_manager.session() as db:
+            row = await db.get(StudioArtifact, pid)
+            row.content = json.dumps({'js': 'app', 'thumbnail': IMAGE})
+            await db.commit()
+    client.portal.call(fill)
+    response = client.get(probe, headers=owner)
+    assert response.json() == {'status': 'ready', 'version': 1, 'src': IMAGE}
+    assert response.headers['Cache-Control'] == 'private, no-store'
+    client.post(f'/api/v1/af/projects/{pid}/files', headers=owner, json={'files': FILES})
+    assert client.get(probe, headers=owner).json() == {'status': 'pending', 'version': 2}

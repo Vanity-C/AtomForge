@@ -84,7 +84,7 @@ async def capture_artifact(artifact):
     return None
 
 
-async def project_thumbnail(project_id: int, actor_id: str):
+async def project_thumbnail(project_id: int, actor_id: str, cached_only: bool = False):
     async with db_manager.session() as db:
         project = await AfProjectService(db, actor_id).get_project(project_id)
         version = project['current_version']
@@ -100,6 +100,10 @@ async def project_thumbnail(project_id: int, actor_id: str):
             artifact = None
         if artifact and valid_thumbnail(artifact.get('thumbnail')):
             return {'status': 'ready', 'version': version, 'src': artifact['thumbnail']}
+        # Gallery reads must not wait behind legacy builds or browser captures.
+        # The client schedules missing covers separately after this quick probe.
+        if cached_only:
+            return {'status': 'pending', 'version': version}
         files = await AfProjectService(db, actor_id).list_files(project_id) if artifact is None else None
         if artifact is None and not files:
             return {'status': 'unbuilt', 'version': version}

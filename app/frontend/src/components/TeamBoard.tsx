@@ -5,6 +5,7 @@ import {pipelineStages, type PipelineState} from '@/lib/pipeline';
 import {useStageTeam} from './AgentProvider';
 import AgentAvatar from './AgentAvatar';
 import AgentPersona from './AgentPersona';
+import DeliveryBoard from './DeliveryBoard';
 import '@/styles/pipeline.css';
 
 const labels:Record<PipelineState,string>={pending:'等待交接',active:'正在进行',complete:'已交接',waiting:'等待确认',blocked:'暂时停留'};
@@ -26,6 +27,7 @@ export default function TeamBoard({run,mode='team'}:{run:StudioRun|null;mode?:'t
   const repairing=stages.some(s=>s.repairing);
   const stageLabel=(s:typeof selected)=>s.state==='complete'&&s.id==='qa'?'验收通过':s.state==='waiting'&&s.id==='qa'?'等待修复':labels[s.state];
   const output=selected.output;
+  if(mode==='team'&&run?.result.workflow)return <DeliveryBoard run={run}/>;
   return <section className="pipeline-board" aria-label={mode==='team'?'团队协作流水线':'工程师工作流水线'}>
     {(run?.result.team?.leader||!run)&&<div className="pipeline-lead"><AgentAvatar role="leader" person={team.find(r=>r.id==='leader')?.profile} className="h-12 w-12"/><div><span>团队领导 · {team.find(r=>r.id==='leader')?.alias}</span><strong>{run?.result.team?.leader?.goal||'你说目标，我来安排团队。'}</strong><p>{run?.result.team?.leader?.summary||'由领导拆解阶段、分配任务，协调成员完成实现与独立验收。'}</p></div></div>}
     <header className="pipeline-heading"><span className="pipeline-heading-icon"><Workflow size={20}/></span><div><h3>{mode==='team'?'从想法，到交付':'一步步，把想法做出来'}</h3><p>{mode==='team'?'每一棒有人接，每一步有交代。':'从计划到验证，进展清晰可见。'}</p></div><div className="pipeline-count"><strong>{completed}<span> / {stages.length}</span></strong><small>阶段已完成</small></div></header>

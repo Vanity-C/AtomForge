@@ -62,6 +62,8 @@ def upgrade_accounts(connection):
     if 'af_users' not in inspect(connection).get_table_names():
         return
     columns = {c['name'] for c in inspect(connection).get_columns('af_users')}
+    if 'session_version' not in columns:
+        connection.execute(text('ALTER TABLE af_users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0'))
     for column in ('username', 'username_key', 'avatar_data'):
         if column not in columns:
             connection.execute(text(f'ALTER TABLE af_users ADD COLUMN {column} TEXT'))

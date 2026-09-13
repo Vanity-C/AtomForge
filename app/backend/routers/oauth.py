@@ -62,6 +62,7 @@ async def exchange(data:Exchange,request:Request,response:Response,user=Depends(
     if flow.get('purpose')!='exchange':raise HTTPException(400,'无效的登录凭证')
     user=await db.get(Af_users,flow['owner'])
     if not user or (user.status or 'active')!='active':raise HTTPException(403,'账号不可用')
+    if flow.get('session_version',0)!=user.session_version:raise HTTPException(400,'密码已更新，请重新发起授权')
     response.headers['Cache-Control']='no-store'
     return {**create_session_token(user),'user':public_profile(user),'redirect':flow['redirect']}
 

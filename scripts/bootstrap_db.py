@@ -32,7 +32,7 @@ async def initialize_database():
                 if 'af_users' in tables:
                     columns = await conn.run_sync(lambda sync: {c['name'] for c in inspect(sync).get_columns('af_users')})
                     indexes = set((await conn.execute(text("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='af_users'"))).scalars())
-                    account_upgrade = not {'username', 'username_key', 'avatar_data'}.issubset(columns) or not {'uq_af_users_email_normalized', 'uq_af_users_username_key'}.issubset(indexes)
+                    account_upgrade = not {'username', 'username_key', 'avatar_data', 'session_version'}.issubset(columns) or not {'uq_af_users_email_normalized', 'uq_af_users_username_key'}.issubset(indexes)
                 if missing or account_upgrade or project_upgrade:
                     import sqlite3
                     from pathlib import Path

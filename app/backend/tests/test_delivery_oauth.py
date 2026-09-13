@@ -130,31 +130,33 @@ def test_binding_requires_matching_browser_and_preserves_existing_account(client
     assert 'private-external-token' not in json.dumps(rows)
     other,_=account(client)
     _,r=login_flow(client,'gitee',other,subject='linked-456')
-    assert 'error=' in r.headers['location']
+    ticket=parse_qs(urlsplit(r.headers['location']).query)['ticket'][0]
+    assert client.post('/api/v1/af-auth/oauth/exchange',headers=other,json={'ticket':ticket}).json()['status']=='confirmation_required'
 
-def github_transfer(client,subject):
+def provider_transfer(client,subject,provider):
     original,_=account(client);target,_=account(client)
-    login_flow(client,'github',original,subject=subject)
-    _,response=login_flow(client,'github',target,subject=subject)
+    login_flow(client,provider,original,subject=subject)
+    _,response=login_flow(client,provider,target,subject=subject)
     ticket=parse_qs(urlsplit(response.headers['location']).query)['ticket'][0]
     return original,target,ticket
 
-def github_connection(client,owner):
-    return next(row for row in client.get('/api/v1/af-auth/oauth/providers',headers=owner).json()['items'] if row['id']=='github')
+def provider_connection(client,owner,provider):
+    return next(row for row in client.get('/api/v1/af-auth/oauth/providers',headers=owner).json()['items'] if row['id']==provider)
 
-def test_github_transfer_requires_confirmation_then_moves_login_and_publish(client,configured):
-    original,target,ticket=github_transfer(client,'transfer-confirm')
+@pytest.mark.parametrize('provider',['github','gitee','netlify'])
+def test_provider_transfer_requires_confirmation_then_moves_login_and_publish(client,configured,provider):
+    original,target,ticket=provider_transfer(client,'transfer-confirm',provider)
     pid=project(client,original)
     for _ in range(2):
         pending=client.post('/api/v1/af-auth/oauth/exchange',headers=target,json={'ticket':ticket})
         assert pending.status_code==200 and pending.json()['status']=='confirmation_required'
         assert 'access_token' not in pending.text and 'private-external-token' not in pending.text
-    assert github_connection(client,original)['connected']
-    assert not github_connection(client,target)['connected']
+    assert provider_connection(client,original,provider)['connected']
+    assert not provider_connection(client,target,provider)['connected']
     confirmed=client.post('/api/v1/af-auth/oauth/transfer',headers=target,json={'ticket':ticket,'confirm':True})
     assert confirmed.status_code==200 and confirmed.json()['transferred']
-    assert not github_connection(client,original)['connected']
-    assert github_connection(client,target)['publish_authorized']
+    assert not provider_connection(client,original,provider)['connected']
+    assert provider_connection(client,target,provider)['publish_authorized']
     assert client.get(f'/api/v1/af/projects/{pid}',headers=original).status_code==200
     assert client.get(f'/api/v1/af/projects/{pid}',headers=target).status_code==404
     original_id=client.get('/api/v1/af-auth/me',headers=original).json()['user']['id']
@@ -163,22 +165,25 @@ def test_github_transfer_requires_confirmation_then_moves_login_and_publish(clie
         from core.database import db_manager
         from fastapi import HTTPException
         async with db_manager.session() as db:
-            with pytest.raises(HTTPException):await oauth.token_for(db,int(original_id),'github')
-            assert await oauth.token_for(db,int(target_id),'github')=='private-external-token'
+            with pytest.raises(HTTPException):await oauth.token_for(db,int(original_id),provider)
+            assert await oauth.token_for(db,int(target_id),provider)=='private-external-token'
     asyncio.run(check_tokens())
     assert client.post('/api/v1/af-auth/oauth/transfer',headers=target,json={'ticket':ticket,'confirm':True}).status_code==400
-    _,response=login_flow(client,'github',subject='transfer-confirm')
+    if provider=='netlify':return  # Netlify supplies deployment authorization only.
+    _,response=login_flow(client,provider,subject='transfer-confirm')
     login_ticket=parse_qs(urlsplit(response.headers['location']).query)['ticket'][0]
     assert client.post('/api/v1/af-auth/oauth/exchange',json={'ticket':login_ticket}).json()['user']['id']==target_id
 
-def test_github_transfer_cancel_preserves_original_and_consumes_ticket(client,configured):
-    original,target,ticket=github_transfer(client,'transfer-cancel')
+@pytest.mark.parametrize('provider',['github','gitee','netlify'])
+def test_provider_transfer_cancel_preserves_original_and_consumes_ticket(client,configured,provider):
+    original,target,ticket=provider_transfer(client,'transfer-cancel',provider)
     assert client.post('/api/v1/af-auth/oauth/transfer',headers=target,json={'ticket':ticket,'confirm':False}).json()['transferred'] is False
-    assert github_connection(client,original)['connected'] and not github_connection(client,target)['connected']
+    assert provider_connection(client,original,provider)['connected'] and not provider_connection(client,target,provider)['connected']
     assert client.post('/api/v1/af-auth/oauth/transfer',headers=target,json={'ticket':ticket,'confirm':True}).status_code==400
 
-def test_github_transfer_requires_initiating_user_and_browser(client,configured):
-    original,target,ticket=github_transfer(client,'transfer-security')
+@pytest.mark.parametrize('provider',['github','gitee','netlify'])
+def test_provider_transfer_requires_initiating_user_and_browser(client,configured,provider):
+    original,target,ticket=provider_transfer(client,'transfer-security',provider)
     for headers,expected in [(None,401),(original,403)]:
         assert client.post('/api/v1/af-auth/oauth/transfer',headers=headers,json={'ticket':ticket,'confirm':True}).status_code==expected
     assert client.post('/api/v1/af-auth/oauth/exchange',headers=original,json={'ticket':ticket}).status_code==403
@@ -188,9 +193,10 @@ def test_github_transfer_requires_initiating_user_and_browser(client,configured)
     assert client.post('/api/v1/af-auth/oauth/transfer',headers=target,json={'ticket':ticket,'confirm':True}).status_code==200
 
 @pytest.mark.parametrize('change',['expiry','reauthorize','target_bound'])
-def test_github_transfer_rejects_stale_confirmation(client,configured,change):
+@pytest.mark.parametrize('provider',['github','gitee','netlify'])
+def test_provider_transfer_rejects_stale_confirmation(client,configured,provider,change):
     subject='transfer-stale-'+change
-    original,target,ticket=github_transfer(client,subject)
+    original,target,ticket=provider_transfer(client,subject,provider)
     if change=='expiry':
         async def expire():
             from core.database import db_manager
@@ -198,30 +204,40 @@ def test_github_transfer_rejects_stale_confirmation(client,configured,change):
             async with db_manager.session() as db:
                 row=await db.get(OAuthFlow,oauth.digest(ticket));row.expires=0;await db.commit()
         asyncio.run(expire())
-    elif change=='reauthorize':login_flow(client,'github',original,subject=subject)
-    else:login_flow(client,'github',target,subject=subject+'-other')
+    elif change=='reauthorize':login_flow(client,provider,original,subject=subject)
+    else:login_flow(client,provider,target,subject=subject+'-other')
     response=client.post('/api/v1/af-auth/oauth/transfer',headers=target,json={'ticket':ticket,'confirm':True})
     assert response.status_code==(400 if change=='expiry' else 409)
-    assert github_connection(client,original)['connected']
+    assert provider_connection(client,original,provider)['connected']
 
-def test_github_competing_transfers_only_one_can_win(client,configured):
-    original,target,ticket=github_transfer(client,'transfer-competing')
+@pytest.mark.parametrize('provider',['github','gitee','netlify'])
+def test_provider_competing_transfers_only_one_can_win(client,configured,provider):
+    original,target,ticket=provider_transfer(client,'transfer-competing',provider)
     other,_=account(client)
-    _,response=login_flow(client,'github',other,subject='transfer-competing')
+    _,response=login_flow(client,provider,other,subject='transfer-competing')
     other_ticket=parse_qs(urlsplit(response.headers['location']).query)['ticket'][0]
     assert client.post('/api/v1/af-auth/oauth/transfer',headers=target,json={'ticket':ticket,'confirm':True}).status_code==200
     assert client.post('/api/v1/af-auth/oauth/transfer',headers=other,json={'ticket':other_ticket,'confirm':True}).status_code==409
-    assert github_connection(client,target)['connected']
-    assert not github_connection(client,original)['connected'] and not github_connection(client,other)['connected']
+    assert provider_connection(client,target,provider)['connected']
+    assert not provider_connection(client,original,provider)['connected'] and not provider_connection(client,other,provider)['connected']
 
-def test_github_transfer_waits_for_running_publish_then_can_retry(client,configured):
-    original,target,ticket=github_transfer(client,'transfer-running')
+@pytest.mark.parametrize('provider',['github','gitee','netlify'])
+def test_provider_transfer_waits_for_running_publish_then_can_retry(client,configured,provider):
+    original,target,ticket=provider_transfer(client,'transfer-running',provider)
     pid=project(client,original)
-    with patch('services.delivery.launch'):
-        job=client.post(f'/api/v1/delivery/projects/{pid}',headers=original,json={'kind':'publish','provider':'github','name':'test-transfer'}).json()
+    async def queued_job():
+        from core.database import db_manager
+        from models.delivery import Delivery
+        from services.af_auth import decode_session_token
+        job_id='transfer-running-'+provider
+        async with db_manager.session() as db:
+            db.add(Delivery(id=job_id,project_id=pid,owner=int(decode_session_token(original['X-AtomForge-Token'])['sub']),kind='deploy' if provider=='netlify' else 'publish',provider=provider,version=1,created=time.time()))
+            await db.commit()
+        return {'id':job_id}
+    job=asyncio.run(queued_job())
     response=client.post('/api/v1/af-auth/oauth/transfer',headers=target,json={'ticket':ticket,'confirm':True})
     assert response.status_code==409 and '发布完成' in response.json()['detail']
-    assert github_connection(client,original)['connected']
+    assert provider_connection(client,original,provider)['connected']
     asyncio.run(delivery.progress(job['id'],'done',status='done'))
     assert client.post('/api/v1/af-auth/oauth/transfer',headers=target,json={'ticket':ticket,'confirm':True}).status_code==200
 

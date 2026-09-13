@@ -74,6 +74,7 @@ async def begin(db, provider, browser, user, purpose, redirect):
     if purpose=='connect': scope+=(' repo' if provider=='github' else ' projects' if provider=='gitee' else '')
     callback=origin+'/api/v1/af-auth/oauth/'+provider+'/callback'
     payload={'provider':provider,'owner':user.id if purpose=='connect' else None,'purpose':purpose,'redirect':return_path(redirect),'verifier':verifier,'callback':callback,'scope':scope}
+    if purpose=='connect':payload['session_version']=user.session_version
     await db.execute(delete(OAuthFlow).where(OAuthFlow.expires<time.time()))
     db.add(OAuthFlow(key=digest(state),browser=digest(browser),expires=time.time()+600,encrypted=pack(payload)))
     await db.commit()
@@ -110,6 +111,10 @@ async def api(provider, token, method, path, **kwargs):
 async def callback(db, provider, state, browser, code):
     flow=await consume(db,state,browser)
     if flow.get('provider')!=provider or flow.get('purpose') not in {'login','connect'}: raise HTTPException(400,'授权平台不匹配')
+    if flow['owner']:
+        owner=await db.get(Af_users,flow['owner'])
+        if not owner or flow.get('session_version',0)!=owner.session_version:
+            raise HTTPException(400,'密码已更新，请重新发起授权')
     c=provider_config(provider)
     data={'grant_type':'authorization_code','client_id':c['client_id'],'client_secret':c['client_secret'],'code':code,'redirect_uri':flow['callback']}
     if provider=='github':data['code_verifier']=flow['verifier']
@@ -127,13 +132,13 @@ async def callback(db, provider, state, browser, code):
     if not subject or not profile.get('login'): raise HTTPException(502,'未能获取第三方账号身份')
     row=(await db.execute(select(ExternalIdentity).where(ExternalIdentity.provider==provider,ExternalIdentity.subject==subject))).scalar_one_or_none()
     if row and flow['owner'] and row.owner!=flow['owner']:
-        if provider!='github':raise HTTPException(409,'该第三方账号已绑定其他 AtomForge 账号，请使用原账号登录')
         target=await db.get(Af_users,flow['owner'])
         if not target or (target.status or 'active')!='active':raise HTTPException(403,'账号不可用')
         existing=await db.scalar(select(ExternalIdentity.id).where(ExternalIdentity.owner==target.id,ExternalIdentity.provider==provider))
-        if existing:raise HTTPException(409,'当前账号已绑定其他 GitHub 身份，无法转移绑定')
+        if existing:raise HTTPException(409,'当前账号已绑定其他 '+c['name']+' 身份，无法转移绑定')
         ticket=secrets.token_urlsafe(32)
         pending={'purpose':'transfer','owner':target.id,'provider':provider,'identity':row.id,'previous_owner':row.owner,'previous_encrypted':row.encrypted,'login':profile['login'],'token_data':token_data,'scope':granted,'redirect':'/account'}
+        pending['session_version']=target.session_version
         db.add(OAuthFlow(key=digest(ticket),browser=digest(browser),expires=time.time()+600,encrypted=pack(pending)))
         await db.commit()
         return ticket
@@ -157,7 +162,7 @@ async def callback(db, provider, state, browser, code):
             row.encrypted=pack(token_data);row.scope=granted
         row.login=profile['login']
     ticket=secrets.token_urlsafe(32)
-    db.add(OAuthFlow(key=digest(ticket),browser=digest(browser),expires=time.time()+120,encrypted=pack({'purpose':'exchange','owner':user.id,'redirect':flow['redirect']})))
+    db.add(OAuthFlow(key=digest(ticket),browser=digest(browser),expires=time.time()+120,encrypted=pack({'purpose':'exchange','owner':user.id,'session_version':user.session_version,'redirect':flow['redirect']})))
     try: await db.commit()
     except IntegrityError:
         await db.rollback();raise HTTPException(409,'账号关联发生冲突，请重新登录后绑定') from None
@@ -166,10 +171,12 @@ async def callback(db, provider, state, browser, code):
 def require_transfer_owner(flow,user):
     if flow.get('purpose')!='transfer':raise HTTPException(400,'无效的绑定转移凭证')
     if not user or user.id!=flow['owner']:raise HTTPException(403,'请使用发起连接的 AtomForge 账号确认转移')
+    if flow.get('session_version',0)!=user.session_version:raise HTTPException(400,'密码已更新，请重新连接并确认')
 
 async def resolve_transfer(db,ticket,browser,user,confirm):
     flow=await inspect_flow(db,ticket,browser)
     require_transfer_owner(flow,user)
+    name=PROVIDERS[flow['provider']]['name']
     await consume(db,ticket,browser,commit=False)
     if confirm:
         # Match delivery.create's submission lock so no job can retain the old
@@ -179,17 +186,17 @@ async def resolve_transfer(db,ticket,browser,user,confirm):
         active=await db.scalar(select(Delivery.id).where(Delivery.owner==flow['previous_owner'],Delivery.provider==flow['provider'],Delivery.status.in_(['queued','running'])))
         if active:
             await db.rollback()
-            raise HTTPException(409,'原账号正在使用 GitHub 发布项目，请等待发布完成后再次确认')
+            raise HTTPException(409,'原账号正在使用 '+name+' 发布项目，请等待发布完成后再次确认')
         existing=await db.scalar(select(ExternalIdentity.id).where(ExternalIdentity.owner==user.id,ExternalIdentity.provider==flow['provider']))
         if existing:
             await db.rollback()
-            raise HTTPException(409,'当前账号的 GitHub 绑定已发生变化，请重新连接')
+            raise HTTPException(409,'当前账号的 '+name+' 绑定已发生变化，请重新连接')
         # Compare the identity and its authorization snapshot as well as the owner:
         # another confirmation or reauthorization must invalidate this consent.
         result=await db.execute(update(ExternalIdentity).where(ExternalIdentity.id==flow['identity'],ExternalIdentity.owner==flow['previous_owner'],ExternalIdentity.encrypted==flow['previous_encrypted']).values(owner=user.id,login=flow['login'],encrypted=pack(flow['token_data']),scope=flow['scope']))
         if result.rowcount!=1:
             await db.rollback()
-            raise HTTPException(409,'GitHub 绑定已发生变化，请重新连接并确认')
+            raise HTTPException(409,name+' 绑定已发生变化，请重新连接并确认')
     try:await db.commit()
     except IntegrityError:
         await db.rollback()

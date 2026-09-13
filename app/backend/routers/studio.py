@@ -10,8 +10,14 @@ from models.af_users import Af_users
 from models.studio import StudioRun, StudioArtifact, StudioUsage, StudioCloud, StudioRelease
 from services.af_projects import AfProjectService
 from services import studio
+from services.team_workflow import PolicyChange, update_policy
 
 router=APIRouter(prefix='/api/v1/studio',tags=['studio'])
+
+@router.patch('/runs/{run_id}/strategy')
+async def change_strategy(run_id:str,data:PolicyChange,user:Af_users=Depends(get_af_user)):
+    return await update_policy(user.id,run_id,data)
+
 commit_locks={}
 
 

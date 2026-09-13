@@ -39,6 +39,17 @@ class ProfileRequest(BaseModel):
     avatar: str | None = Field(None, max_length=1_400_000)
 
 
+class PasswordRequest(BaseModel):
+    current_password: str = Field('', max_length=200)
+    new_password: str = Field(..., max_length=128)
+
+
+@router.post('/password')
+async def change_password(data: PasswordRequest, current_user: Af_users = Depends(get_af_user), db: AsyncSession = Depends(get_db)):
+    user = await AfAuthService(db).change_password(current_user, data.current_password, data.new_password)
+    return {'user': public_profile(user), **create_session_token(user)}
+
+
 @router.get('/username-availability')
 async def username_availability(username: str, current_user: Af_users | None = Depends(get_optional_af_user), db: AsyncSession = Depends(get_db)):
     clean = validate_username(username)

@@ -39,7 +39,7 @@ def test_legacy_configuration_gains_leader_without_resetting_custom_agents(clien
     assert client.put('/api/v1/studio/agents',headers=owner,json={key:result[key] for key in ('agents','active','revision')}).status_code==200
 
 
-def test_leader_controls_real_stage_order_and_dispatches(client,monkeypatch):
+def test_fixed_stage_order_and_direct_handoffs_override_leader_reordering(client,monkeypatch):
     owner,_=account(client);pid=project(client,owner,mode='team');calls=[]
     base=fake_model([])
     async def model(*args,**kwargs):
@@ -52,10 +52,12 @@ def test_leader_controls_real_stage_order_and_dispatches(client,monkeypatch):
     rid=client.post(f'/api/v1/studio/projects/{pid}/runs',headers=owner,json={'instruction':'counter','mode':'team','interactive':False}).json()['id']
     run=wait_run(client,owner,rid)
     assert run['status']=='done',run
-    assert [stage for stage,_ in calls]==['team_leader','team_product','team_architect','team_design','team_code','team_qa']
+    assert [stage for stage,_ in calls]==['team_leader','team_product','team_design','team_architect','team_code','team_qa']
     assert next(ctx for stage,ctx in calls if stage=='team_code')['assignment']['tasks']==['具体任务 engineer']
     assert run['result']['team']['qa']['verified'] is True
-    assert {event.get('recipient') for event in run['events'] if event.get('role')=='leader' and event.get('kind')=='handoff'} >= {'product','design','architect','engineer','qa'}
+    handoffs={(event.get('role'),event.get('recipient')) for event in run['events'] if event.get('kind')=='handoff'}
+    assert {('product','design'),('design','architect'),('architect','engineer'),('engineer','qa')} <= handoffs
+    assert not any(sender=='leader' for sender,recipient in handoffs)
     assert run['events'][-1]['role']=='leader'
 
 
@@ -129,7 +131,7 @@ def test_new_feedback_replaces_waiting_checkpoint_and_resumes_same_run(client,mo
     monkeypatch.setattr(studio,'model_call',model);monkeypatch.setattr(studio,'runner_build',build)
     rid=client.post(f'/api/v1/studio/projects/{pid}/runs',headers=owner,json={'instruction':'counter','mode':'team'}).json()['id']
     waiting=wait_run(client,owner,rid)
-    assert waiting['status']=='awaiting_input' and waiting['result']['pending']['role']=='leader'
+    assert waiting['status']=='awaiting_input' and waiting['result']['pending']['role']=='product'
     old_id=waiting['result']['pending']['id']
     assert client.portal.call(queue_feedback,uid,pid,'无需继续提问，先做单人版')==rid
     finished=wait_run(client,owner,rid)

@@ -8,6 +8,7 @@ export interface AfUser {
   display_name: string;
   username?: string;
   avatar_url?: string;
+  has_password?: boolean;
   created_at?: string;
   last_login_at?: string;
 }
@@ -269,4 +270,11 @@ export async function updateAccount(input: {username: string; email: string; ava
   const payload = await invoke<{user: AfUser}>({url: '/api/v1/af-auth/me', method: 'PATCH', data: input});
   writeSession(readToken(), payload.user);
   return payload.user;
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const token = readToken();
+  const payload = await invoke<AuthPayload>({url: '/api/v1/af-auth/password', method: 'POST', data: {current_password: currentPassword, new_password: newPassword}});
+  if (readToken() !== token) throw new Error('登录账号已变化，请使用新密码重新登录');
+  writeSession(payload.access_token, payload.user);
 }

@@ -92,6 +92,7 @@ async def chat(owner,project_id,role,content,model):
                 members={**members,role:selected}
             context={'files':[{'path':f['path'],'content':f['content'][:20000]} for f in files],'task':json.loads(run.result) if run else {},'discussion':await discussion_context(owner,project_id),'question':content}
             context['currentRun']={'id':run.id,'status':run.status,'stage':run.stage,'error':run.error,'instruction':json.loads(run.payload).get('instruction'),'recentActivity':[e for e in json.loads(run.events) if not e.get('kind','').startswith('tool_')][-8:]} if run else None
+            context['strategy']=json.loads(run.payload).get('workflow',{}) if run else {}
         await append(owner,project_id,'user',target,'chat',content)
         await append(owner,project_id,target,'user','activity','收到，我先结合项目进展看看。',{'agent':selected})
         try:
@@ -119,13 +120,15 @@ async def leader_reply(owner,project_id,content,model,context,members,member_tar
         question:str=Field(min_length=1,max_length=1500)
     class Reply(BaseModel):
         answer:str=Field(min_length=1,max_length=8000)
-        action:Literal['reply','implement']='reply'
+        action:Literal['reply','implement','strategy']='reply'
         instruction:str=Field(default='',max_length=6000)
         consult:list[Consultation]=Field(default_factory=list,max_length=3)
+        strategy:dict=Field(default_factory=dict)
     system='''你是团队领导，是用户的第一联系人。结合真实项目状态，直接回答需求、反馈和问题；必要时向专业成员询证。
 返回 JSON {"answer":"自然、具体的中文回应","action":"reply|implement","instruction":"本轮完整的实施要求","consult":[{"role":"product|design|architect|engineer|qa","question":"需要该成员具体回答的问题"}]}。
 只有用户明确要求创建、修改、修复或继续实施时选择 implement；咨询、状态查询、闲聊使用 reply，不擅自改代码。implementation指令只保留用户授权的范围，不包含付费、公开发布、部署或删除项目等外部动作；这些事项引导用户使用对应功能。
 consult 最多3位，必要才咨询，不虚构回复。尚未执行的动作只能描述为安排；调度系统成功后会附上真实状态。已有任务进行中时，明确新反馈会在安全节点合并并重新安排，不能说已完成。用户最新反馈优先于旧任务记录。'''
+    system+='\n用户明确要求仅调整优先级、WIP、SLA、修复次数或测试门槛时，使用 action="strategy" 并返回 strategy 对象，仅包含需修改的 priority/wip/sla_minutes/max_repairs/min_tests 字段；沿用当前策略其他值。该操作不改源码、不重新规划工作包、不改变交付列，不更换本轮成员。没有活跃工作流时说明限制，不虚构调整成功。不要为状态咨询执行调整。'
     async def ask(extra):
         raw=await studio.model_call(owner,project_id,'',model,'chat_leader',[{'role':'system','content':system},{'role':'user','content':json.dumps({**context,**extra},ensure_ascii=False)}],max_tokens=2600,agent_team=members)
         return Reply.model_validate(raw)
@@ -143,6 +146,14 @@ consult 最多3位，必要才咨询，不虚构回复。尚未执行的动作�
         await append(owner,project_id,actor(role),actor('leader'),'chat',answer[:6000],{'agent':members[role]})
     if consultations:reply=await ask({'consultationResults':consultations,'instructionToLeader':'咨询已实际完成。现在给用户最终回应，不再请求咨询。'})
     run_id=None;queued=False
+    if reply.action=='strategy':
+        from services.team_workflow import PolicyChange, update_policy
+        current=context.get('currentRun') or {}; board=context.get('strategy') or {}
+        if not current.get('id') or not board:raise HTTPException(409,'当前没有可调整的活跃战略看板')
+        if not reply.strategy:raise HTTPException(400,'请明确需要调整的策略')
+        change=PolicyChange.model_validate({**board['policy'],**reply.strategy,'revision':board['revision'],'reason':content[:500]})
+        await update_policy(owner,current['id'],change)
+        run_id=current['id']
     if reply.action=='implement':
         if not reply.instruction.strip():raise ValueError('领导未提供明确实施要求')
         instruction='用户原始要求：'+content+'\n领导整理的实施安排：'+reply.instruction
@@ -156,6 +167,7 @@ consult 最多3位，必要才咨询，不虚构回复。尚未执行的动作�
             await append(owner,project_id,actor('leader'),'user','chat','这次调整暂未安排：'+str(exc.detail),{'agent':members['leader']})
             raise
     status='\n新反馈已进入当前任务，会在安全节点保留草稿并重新调度。' if queued else '\n任务已开始，我会协调实现与验证。' if run_id else ''
+    if reply.action=='strategy':status='\n战略策略已更新，交付列、已有产出与当前成员保持不变。'
     await append(owner,project_id,actor('leader'),'user','chat',reply.answer+status,{'agent':members['leader'],'scheduled_run':run_id,'queued':queued})
     return {'success':True,'run_id':run_id,'queued':queued}
 
@@ -225,6 +237,8 @@ async def decide(owner,run_id,checkpoint_id,action,feedback,selections=None,othe
                     payload['decisions'][-1]['feedback'] = '\n'.join([feedback, '同时保留以下选择：', *selected_lines])
             if action=='approve':payload.setdefault('confirmed',[]).append(key)
             else:
+                if payload.get('workflow'):
+                    payload.setdefault('workflow_archive',[]).append(payload.pop('workflow'))
                 result.get('team',{}).pop('leader',None)
                 for role in (['product','design','architect','engineer','qa'] if key=='requirements' else ['design','architect','engineer','qa']):
                     result.get('team',{}).pop(role,None)

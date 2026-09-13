@@ -22,6 +22,7 @@ export default function ExternalAccounts({login=false,redirect='/account',only}:
   }
   return <section className="space-y-3" aria-label="第三方账号连接">
     <div><h3 className="font-semibold">连接你的账号</h3><p className="mt-1 text-xs leading-5 text-muted-foreground">GitHub／Gitee 用于登录和源码发布，Netlify 用于部署公网应用。</p></div>
+    <p className="text-xs leading-5 text-muted-foreground">将已绑定其他 AtomForge 账号的连接换绑到这里：点击“连接”并完成平台授权，再确认转移。确认前原有绑定保持不变。</p>
     {loading&&<p className="text-xs text-muted-foreground">正在读取连接状态…</p>}
     <div className="space-y-2">{visible.map(p=>{const Icon=p.id==='github'?Github:p.id==='gitee'?GitBranch:Globe;return <div key={p.id} className="flex items-center gap-3 rounded-xl border bg-background p-3"><Icon className="h-5 w-5 shrink-0"/><div className="min-w-0 flex-1"><p className="text-sm font-medium">{p.name}</p><p className="truncate text-xs text-muted-foreground">{p.connected?p.login:p.configured?'尚未连接':p.configuration_issue==='origin_missing'?'尚未配置网站回调地址':'尚未配置 OAuth 应用凭据'}</p></div><Button type="button" variant="outline" size="sm" disabled={!!busy||!p.configured} onClick={()=>void begin(p.id)}>{busy===p.id?<Loader2 className="mr-1 h-4 w-4 animate-spin"/>:p.connected?<Check className="mr-1 h-3 w-3"/>:null}{p.connected?(p.id!=='netlify'&&!p.publish_authorized?'授权发布':'重新授权'):'连接'}</Button></div>;})}</div>
     {error&&<p role="alert" className="mt-2 text-xs text-destructive">{error}</p>}

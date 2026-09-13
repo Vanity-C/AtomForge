@@ -116,12 +116,13 @@ async def get_project(
 async def get_project_thumbnail(
     project_id: int,
     response: Response,
+    cached_only: bool = False,
     current_user: Af_users = Depends(get_af_user),
 ):
     """Return a member-authorized cover of the project's current built version."""
     from services.project_thumbnails import project_thumbnail
     response.headers['Cache-Control'] = 'private, no-store'
-    return await project_thumbnail(project_id, str(current_user.id))
+    return await project_thumbnail(project_id, str(current_user.id), cached_only=cached_only)
 
 
 @router.patch("/projects/{project_id}")

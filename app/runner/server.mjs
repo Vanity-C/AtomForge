@@ -117,13 +117,15 @@ export async function compile(files) {
 }
 
 export const MAX_TEST_STEPS = 48;
+const PAGE_ACTIONS = ['reload','clear_storage'];
+const ASSERTIONS = ['text','visible','hidden','enabled','disabled'];
 export class RunnerEnvironmentError extends Error {}
 export async function check(artifact, steps=[], {capture=false}={}) {
   if (!Array.isArray(steps)) throw Error('测试协议错误：tests 必须是步骤数组');
   if (steps.length > MAX_TEST_STEPS) throw Error(`测试协议错误：提交了 ${steps.length} 步，单次最多支持 ${MAX_TEST_STEPS} 步。请精简重复测试，保留核心流程；此错误不代表应用代码有问题。`);
   for (const [index, step] of steps.entries()) {
-    if (!step || !['click','fill','text','visible'].includes(step.action) ||
-        typeof step.selector !== 'string' || !step.selector.trim() || step.selector.length > 300 ||
+    if (!step || !['click','fill',...ASSERTIONS,...PAGE_ACTIONS].includes(step.action) ||
+        (!PAGE_ACTIONS.includes(step.action) && (typeof step.selector !== 'string' || !step.selector.trim() || step.selector.length > 300)) ||
         (['fill','text'].includes(step.action) && typeof step.value !== 'string')) {
       throw Error(`测试协议错误：第 ${index+1} 步需要有效的 action、CSS selector（最多 300 字符），fill/text 还需要字符串 value；请修正测试步骤。`);
     }
@@ -133,19 +135,26 @@ export async function check(artifact, steps=[], {capture=false}={}) {
   catch(error) { throw new RunnerEnvironmentError('验证浏览器无法启动：'+String(error.message).slice(0,1500)); }
   let timedOut = false;
   const deadline=setTimeout(()=>{timedOut=true;void browser.close();},60000);
-  const logs=[]; const errors=[];
+  const logs=[]; const errors=[]; let failure;
   try {
     const context=await browser.newContext({viewport:{width:1280,height:800},serviceWorkers:'block'});
     // Generated code gets a clean browser context: no secrets, workspace login,
     // host volumes, external requests or access to the backend network.
-    await context.route('**/*', route=>route.abort());
+    // Fulfilled in memory: a real origin gives native storage and reload semantics
+    // without allowing generated code to reach any external or backend service.
+    const testOrigin='https://atomforge-test.invalid';
+    await context.route('**/*', route=>{
+      const url=route.request().url();
+      if(url===testOrigin+'/')return route.fulfill({contentType:'text/html',body:'<!doctype html><html><head><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script src="/app.js"></script></body></html>'});
+      if(url===testOrigin+'/app.js')return route.fulfill({contentType:'text/javascript',body:artifact.js});
+      if(url===testOrigin+'/app.css')return route.fulfill({contentType:'text/css',body:artifact.css||''});
+      return route.abort();
+    });
     await context.routeWebSocket('**/*', socket=>socket.close());
     const page=await context.newPage(); page.setDefaultTimeout(2500);
     page.on('pageerror',e=>errors.push(e.message.slice(0,1500)));
     page.on('console',m=>{if(logs.length<60) logs.push(m.type()+': '+m.text().slice(0,1000));});
-    await page.setContent('<html><head></head><body><div id="root"></div></body></html>');
-    await page.evaluate(()=>{
-      const storage=new Map(); Object.defineProperty(window,'localStorage',{value:{getItem:k=>storage.get(String(k))??null,setItem:(k,v)=>storage.set(String(k),String(v)),removeItem:k=>storage.delete(String(k)),clear:()=>storage.clear()}});
+    await context.addInitScript(()=>{
       // Backend behavior is tested separately; this fixture only allows UI tests.
       const rows=new Map(); let me=null;
       window.__AF_TEST__=async (action,data)=>{
@@ -160,8 +169,7 @@ export async function check(artifact, steps=[], {capture=false}={}) {
         if(action==='remove'){rows.set(data.collection,list.filter(r=>r.id!==data.id));return {success:true};}
       };
     });
-    if(artifact.css)await page.addStyleTag({content:artifact.css});
-    await page.addScriptTag({content:artifact.js});
+    await page.goto(testOrigin+'/');
     await page.waitForFunction(()=>document.getElementById('root')?.childElementCount > 0,{},{timeout:5000});
     // Capture the initial application, before interaction tests change its state.
     // It shares the isolated browser and never contacts production cloud data.
@@ -177,31 +185,44 @@ export async function check(artifact, steps=[], {capture=false}={}) {
       }
     }
     for (const [index, step] of steps.entries()) {
-      if (typeof step.selector!=='string' || step.selector.length>300) throw Error('测试需要有效的 CSS selector');
-      const target=page.locator(step.selector).first();
+      const target=PAGE_ACTIONS.includes(step.action)?null:page.locator(step.selector).first();
       try {
       if(step.action==='click') await target.click();
       else if(step.action==='fill') await target.fill(String(step.value||''));
       else if(step.action==='text') {await page.waitForFunction(({selector,value})=>document.querySelector(selector)?.textContent?.includes(value),{selector:step.selector,value:String(step.value)},{timeout:2500});}
       else if(step.action==='visible') await target.waitFor({state:'visible'});
+      else if(step.action==='hidden') await target.waitFor({state:'hidden'});
+      else if(step.action==='enabled'||step.action==='disabled') {
+        await page.waitForFunction(({selector,disabled})=>{
+          const el=document.querySelector(selector);
+          return !!el && (el.matches(':disabled')||el.getAttribute('aria-disabled')==='true')===disabled;
+        },{selector:step.selector,disabled:step.action==='disabled'});
+      }
+      else if(step.action==='reload') {
+        await page.reload();
+        await page.waitForFunction(()=>document.getElementById('root')?.childElementCount>0);
+      }
+      else if(step.action==='clear_storage') await page.evaluate(()=>localStorage.clear());
       else throw Error('未知测试操作');
       } catch (error) {
-        const actual = await target.textContent({timeout:300}).catch(()=>null);
-        const detail = '第 '+(index+1)+' 步 '+step.action+' '+step.selector+
+        const actual = target?await target.textContent({timeout:300}).catch(()=>null):null;
+        const disabled = target?await target.isDisabled({timeout:300}).catch(()=>null):null;
+        failure={kind:['click','fill'].includes(step.action)?'interaction':'assertion',step:index+1,action:step.action,selector:step.selector,actual,disabled};
+        const detail = '第 '+(index+1)+' 步 '+step.action+' '+(step.selector||'')+
           (step.action==='text'?'，期望包含 '+JSON.stringify(String(step.value)):'')+
           '，实际文本 '+JSON.stringify(actual === null ? '元素不存在' : actual.slice(0,300))+
-          '。请核对选择器、测试预期和真实交互；日期相关测试不能把周一或第一个日期当作今天。';
+          (disabled?'，元素处于禁用状态。先核对输入前置条件；合法的禁用行为应使用 disabled 断言，不能为了点击测试取消业务校验。':'。请依据需求和实际源码核对选择器、测试预期与真实交互。');
         logs.push('FAIL '+detail);
         throw Error(detail+' '+String(error.message).slice(0,700));
       }
-      logs.push('PASS '+step.action+' '+step.selector);
+      logs.push('PASS '+step.action+(step.selector?' '+step.selector:''));
     }
     await page.waitForTimeout(300);
     if(errors.length) throw Error(errors.join('\n'));
     logs.push('PASS 页面挂载与运行错误检查；云端接口使用测试替身');
     const audit=await page.evaluate(()=>({title:document.title,h1:[...document.querySelectorAll('h1')].map(x=>x.textContent?.slice(0,200)),images:document.images.length,missingAlt:[...document.images].filter(x=>!x.hasAttribute('alt')).length,emptyLinks:[...document.querySelectorAll('a')].filter(x=>!x.textContent?.trim()&&!x.getAttribute('aria-label')).length,description:document.querySelector('meta[name="description"]')?.getAttribute('content')||''}));
     return {ok:true,logs,audit,...(thumbnail?{thumbnail}: {})};
-  } catch(e) {return {ok:false,logs,error:timedOut?'交互测试超过 60 秒，请检查等待中的操作或精简重复测试。':String(e.message).slice(0,5000)};}
+  } catch(e) {return {ok:false,logs,...(failure?{failure}:{}),error:timedOut?'交互测试超过 60 秒，请检查等待中的操作或精简重复测试。':String(e.message).slice(0,5000)};}
   finally {clearTimeout(deadline);await browser.close();}
 }
 

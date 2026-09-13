@@ -95,3 +95,33 @@ test('an unauthorized current session is still signed out',async t=>{
   assert.equal(storage.has(TOKEN),false);
   assert.deepEqual(events,[null]);
 });
+
+test('password changes rotate the session without persisting passwords',async t=>{
+  let sent;
+  const {sdk,storage}=await fixture(t,async(url,options)=>{
+    assert.equal(url,'/api/v1/af-auth/password');
+    sent=JSON.parse(options.body);
+    return response({access_token:'rotated-token',user:{...alice,has_password:true}});
+  });
+  await sdk.changePassword('OldPass123','NewPass456');
+  assert.deepEqual(sent,{current_password:'OldPass123',new_password:'NewPass456'});
+  assert.equal(storage.get(TOKEN),'rotated-token');
+  assert.equal(JSON.stringify([...storage]).includes('NewPass456'),false);
+});
+
+test('an incorrect current password keeps the session',async t=>{
+  const {sdk,storage}=await fixture(t,async()=>response({detail:'当前密码不正确'},400));
+  await assert.rejects(sdk.changePassword('wrong','NewPass456'),/当前密码不正确/);
+  assert.equal(storage.get(TOKEN),'token-alice');
+});
+
+test('a delayed password change cannot replace a different account session',async t=>{
+  const pending=deferred();
+  const {sdk,storage}=await fixture(t,async url=>url.endsWith('/login')?response({access_token:'token-bob',user:bob}):pending.promise);
+  const change=sdk.changePassword('OldPass123','NewPass456');
+  await sdk.signIn('bob','test-only-password');
+  pending.resolve(response({access_token:'rotated-alice',user:alice}));
+  await assert.rejects(change,/登录账号已变化/);
+  assert.equal(storage.get(TOKEN),'token-bob');
+  assert.deepEqual(sdk.cachedUser(),bob);
+});
