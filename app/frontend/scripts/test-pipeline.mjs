@@ -61,3 +61,12 @@ test('leader confirmation and repair handoff remain visible',()=>{
   assert.equal(states(repairing).engineer,'active');
   assert.equal(states(repairing).qa,'waiting');
 });
+
+
+test('engineer pipeline has no leadership even with a legacy six-role snapshot',()=>{
+  for(const value of [null,run({agents:{leader:{}},events:[{role:'leader',stage:'plan',message:'old plan'}]})]){
+    const stages=pipelineStages(value,'build');
+    assert.equal(stages.length,4);
+    assert.ok(stages.every(s=>s.role==='engineer'&&s.gatekeeper==='engineer'));
+  }
+});

@@ -140,6 +140,7 @@ def present(payload, status, error=''):
 async def update_policy(owner, run_id, change):
     from services import studio
     async with studio.start_lock, studio.event_lock, db_manager.session() as db:
+        studio.task_control.check()
         row=await db.get(StudioRun,run_id)
         if not row or row.owner!=str(owner):raise HTTPException(404,'任务不存在')
         if row.status not in {'queued','running','awaiting_input'}:raise HTTPException(409,'已结束任务的策略不可修改')

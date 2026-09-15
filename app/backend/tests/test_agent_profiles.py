@@ -75,7 +75,8 @@ def test_run_and_history_keep_persona_snapshot_while_model_uses_it(client,monkey
     captured=[]
     async def create(**kwargs):
         captured.append(kwargs)
-        return SimpleNamespace(usage=None,choices=[SimpleNamespace(finish_reason='stop',message=SimpleNamespace(content='{"summary":"ready"}'))])
+        from model_stream_fixture import stream_response
+        return stream_response(SimpleNamespace(usage=None,choices=[SimpleNamespace(finish_reason='stop',message=SimpleNamespace(content='{"summary":"ready"}'))]))
     class FakeService:
         def __init__(self):self.client=self
         def _require_ai_client(self):return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
@@ -93,7 +94,7 @@ def test_run_and_history_keep_persona_snapshot_while_model_uses_it(client,monkey
 
 def test_direct_chat_uses_custom_agent_and_accepts_gpt(client,monkeypatch):
     from services import studio
-    owner,_=account(client);p=project(client,owner)
+    owner,_=account(client);p=project(client,owner,mode='team')
     config=body(client.get(URL,headers=owner).json());config['agents'][1]['name']='小橙'
     assert client.put(URL,headers=owner,json=config).status_code==200
     async def validate(model):assert model=='gpt-test'

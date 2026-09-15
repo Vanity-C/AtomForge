@@ -2,7 +2,7 @@
 
 把自然语言需求变成可操作、可继续修改、可发布的 React 应用。
 
-AtomForge 是独立实现的 AI 应用工作台：从需求拆解、角色交接、代码生成到浏览器验收和版本发布，提供可体验、可追踪的交付流程。当前交付版本 **v0.3.1**。
+AtomForge 是独立实现的 AI 应用工作台：从需求拆解、角色交接、代码生成到浏览器验收和版本发布，提供可体验、可追踪的交付流程。当前源码版本 **v0.3.8**；生产更新状态见[本次发布记录](docs/RELEASE_0_3_8.md)。
 
 **[在线 Demo](https://newlifezh.top/) · [笔试说明](docs/SUBMISSION.md) · [公开在线说明](https://newlifezh.top/demo-guide.html) · [发布记录](https://github.com/Vanity-C/AtomForge/releases)**
 
@@ -27,7 +27,7 @@ AtomForge 是独立实现的 AI 应用工作台：从需求拆解、角色交接
 3. 查看 Atlas（领导）、Milo（产品）、Luna（设计）、Ollie（架构）、Neo（开发）、Pip（测试）的工作。专业角色直接交接，必要问题才请求用户决定。
 4. 切换预览、文件和工作看板，查看代码、工具记录、负责人及验收证据。生成使用真实模型与浏览器测试，需要等待；可查看当前进度。
 5. 添加习惯、切换打卡并刷新验证数据，继续对话修改或回滚版本。
-6. 从“发布与部署”发布站内独立链接或导出 React 工程；GitHub/Gitee 源码发布及 Netlify 部署需要连接自己的第三方账号。
+6. 顶部“分享”管理公开只读链接，“导出”下载当前版本源码 ZIP；“发布与部署”管理站内快照及 GitHub/Gitee 源码发布、Netlify 公网部署。第三方发布需要连接自己的账号。
 
 ## 当前能力
 
@@ -83,7 +83,7 @@ docker compose up -d --wait  # 恢复
 
 ## 源码开发与生产部署
 
-Windows 安装并启动 Docker Desktop，运行 `./setup.ps1`，再运行 `./start.ps1`。默认工作台 `http://127.0.0.1:15173`，后端读取 `app/backend/.env.local`。脚本会检查独立验证服务的实际编译和浏览器能力。
+本地源码开发同样使用上面的 Docker Compose 方式启动；修改代码后执行 `docker compose up -d --build --wait` 重建镜像。配置统一放在根目录 `.env.docker`。
 
 独立服务器使用 `compose.production.yaml` 和 Caddy HTTPS。低内存服务器在开发机器构建镜像后传输。账号会话升级采用增量数据库兼容，部署前备份数据库与配套密钥。详见[部署、备份与恢复](docs/DEPLOYMENT.md)及[第三方登录与发布配置](docs/PUBLISHING_AND_DEPLOYMENT.md)。
 

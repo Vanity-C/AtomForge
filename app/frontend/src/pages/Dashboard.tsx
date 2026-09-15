@@ -37,12 +37,12 @@ import { suggestProjectName } from '@/lib/agent/codegen';
 import { DEFAULT_PROFILE, type GenerationProfile } from '@/lib/agent/modelProvider';
 import AgentPersona from '@/components/AgentPersona';
 import StarterGallery from '@/components/StarterGallery';
-import {useStageTeam,useTeam} from '@/components/AgentProvider';
+import {useModeTeam,useAgents} from '@/components/AgentProvider';
+import {teamRoster,activeGroup} from '@/lib/agentProfiles';
 import AgentModeSwitch, {loadAgentMode,saveAgentMode} from '@/components/AgentModeSwitch';
 
 export default function Dashboard() {
-  const TEAM_ROLES=useTeam();
-  const engineer=useStageTeam().find(member=>member.id==='engineer');
+  const {config,loading:agentsLoading,error:agentsError}=useAgents();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { authState, user } = useAuth();
@@ -62,6 +62,9 @@ export default function Dashboard() {
   const [prompt, setPrompt] = useState(searchParams.get('prompt') ?? '');
   const [creating, setCreating] = useState(false);
   const [agentMode,setAgentMode] = useState(loadAgentMode);
+  const roster=teamRoster(useModeTeam(agentMode));
+  const engineer=roster.find(member=>member.role==='engineer');
+  useEffect(() => { setAgentMode(loadAgentMode(account)); }, [account]);
   const [profile, setProfile] = useState<GenerationProfile>(DEFAULT_PROFILE);
   const [pendingDelete, setPendingDelete] = useState<ProjectRecord | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
@@ -176,12 +179,12 @@ export default function Dashboard() {
         <>
             {section==='home'&&<section className="conversation-home" aria-label="开始新项目">
               <div className="conversation-welcome">
-                <div className="conversation-team" aria-label="你的智能体伙伴">{TEAM_ROLES.map(r=><AgentPersona key={r.id} role={r.id} profile={r.profile} avatarClassName="h-12 w-12"/>)}</div>
+                <div className="conversation-team" aria-label="你的智能体伙伴">{!config&&(agentsLoading||agentsError)?<span className="text-sm text-muted-foreground">{agentsError?'协作成员暂未加载，请稍后重试':'正在加载你的智能体…'}</span>:roster.map(r=><AgentPersona key={r.id} role={r.id} profile={r.profile} avatarClassName="h-12 w-12"/>)}</div>
                 <h1>今天，想把什么想法变成现实？</h1>
-                <p>从一句话开始，和你的团队一起，做出点不一样的。</p>
+                <p>{agentMode==='team'?`从一句话开始，和${config?activeGroup(config).name:'你的协作团队'}一起，做出点不一样的。`:'从一句话开始，让应用工程师独立完成规划、实现和自测。'}</p>
                 <div className="conversation-input-card">
                   <Textarea ref={composer} aria-label="描述你想要的应用" value={prompt} maxLength={6000} onChange={e=>setPrompt(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&!e.nativeEvent.isComposing){e.preventDefault();if(!creating&&prompt.trim().length>=4)void handleCreate();}}} disabled={creating} placeholder="说说你的想法，或者，你想解决什么问题…" className="conversation-input"/>
-                  <div className="conversation-input-tools"><AgentModeSwitch compact value={agentMode} disabled={creating} onChange={mode=>{setAgentMode(mode);saveAgentMode(mode);}}/><div className="conversation-send-group"><span>{prompt.length?`${prompt.length} / 6000`:'Ctrl / ⌘ + Enter'}</span><Button size="icon" className="conversation-send" disabled={creating||prompt.trim().length<4} aria-label={creating?'正在创建项目':'发送需求并创建项目'} title="发送需求并创建项目" onClick={handleCreate}>{creating?<Loader2 className="h-5 w-5 animate-spin"/>:<ArrowUp className="h-5 w-5"/>}</Button></div></div>
+                  <div className="conversation-input-tools"><AgentModeSwitch compact value={agentMode} disabled={creating} onChange={mode=>{setAgentMode(mode);saveAgentMode(mode,account);}}/><div className="conversation-send-group"><span>{prompt.length?`${prompt.length} / 6000`:'Ctrl / ⌘ + Enter'}</span><Button size="icon" className="conversation-send" disabled={creating||prompt.trim().length<4} aria-label={creating?'正在创建项目':'发送需求并创建项目'} title="发送需求并创建项目" onClick={handleCreate}>{creating?<Loader2 className="h-5 w-5 animate-spin"/>:<ArrowUp className="h-5 w-5"/>}</Button></div></div>
                 </div>
                 <div className="conversation-composer-note"><span>{agentMode==='team'?'团队一起推敲方案，关键决定由你确认。':`${engineer?.alias||'开发伙伴'} 会负责规划、实现和检查。`}</span>{draftSaved&&<span>草稿已保存</span>}</div>
               </div>

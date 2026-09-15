@@ -7,6 +7,7 @@
     "lint": "eslint --quiet ./src",
     "test:editor": "node scripts/check-monaco.mjs",
     "test:auth": "node scripts/check-auth.mjs",
+    "test:versions": "node scripts/check-version-history.mjs",
     "preview": "vite preview",
     "postinstall": "node scripts/prepare-preview.mjs",
     "predev": "node scripts/prepare-preview.mjs",

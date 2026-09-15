@@ -4,22 +4,22 @@
 
 如果登录页显示“未开通”，表示当前实例缺少平台应用凭据，不能通过个人访问令牌或 Codex 账号额度代替。登录与注册共用 OAuth 入口：首次授权创建账号，后续授权返回同一账号。
 
-本地可在仓库根目录运行 `./configure-oauth.ps1 -Check` 检查配置状态（不会输出密钥）；运行 `./configure-oauth.ps1` 按提示输入 Client ID 和隐藏输入的 Client Secret，写入已有 `.env.local`，保留其他配置。脚本不会自动创建第三方应用，也不会重启正在执行任务的服务。
+本地可在仓库根目录运行 `./configure-oauth.ps1 -Check` 检查配置状态（不会输出密钥）；运行 `./configure-oauth.ps1` 按提示输入 Client ID 和隐藏输入的 Client Secret，写入根目录 `.env.docker`，保留其他配置。脚本不会自动创建第三方应用，也不会重启正在执行任务的服务。
 
 创建应用时使用以下资料：
 
 | 字段 | GitHub | Gitee | Netlify |
 | --- | --- | --- | --- |
 | 应用名称 | AtomForge Local | AtomForge Local | AtomForge Local |
-| 网站地址 | `http://127.0.0.1:15173` | `http://127.0.0.1:15173` | `http://127.0.0.1:15173`（若要求填写） |
-| 回调地址 | `http://127.0.0.1:15173/api/v1/af-auth/oauth/github/callback` | `http://127.0.0.1:15173/api/v1/af-auth/oauth/gitee/callback` | `http://127.0.0.1:15173/api/v1/af-auth/oauth/netlify/callback` |
+| 网站地址 | `http://127.0.0.1:8080` | `http://127.0.0.1:8080` | `http://127.0.0.1:8080`（若要求填写） |
+| 回调地址 | `http://127.0.0.1:8080/api/v1/af-auth/oauth/github/callback` | `http://127.0.0.1:8080/api/v1/af-auth/oauth/gitee/callback` | `http://127.0.0.1:8080/api/v1/af-auth/oauth/netlify/callback` |
 
 如果平台拒绝本地回调，应使用实际可访问的 HTTPS 开发域名并同步修改 PUBLIC_ORIGIN、网站访问地址和平台回调；不能只改其中一处。服务在发起授权前检查浏览器 Origin，避免在 localhost 发起、127.0.0.1 回调导致 Cookie 丢失。代理需保留浏览器的 Origin 请求头。
 
-在需要接入的平台创建 OAuth 应用，然后在本地的 `app/backend/.env.local`，或 Docker 实际使用的环境文件中配置：
+在需要接入的平台创建 OAuth 应用，然后在根目录 `.env.docker` 中配置：
 
 ```dotenv
-ATOMFORGE_PUBLIC_ORIGIN=http://127.0.0.1:15173
+ATOMFORGE_PUBLIC_ORIGIN=http://127.0.0.1:8080
 ATOMFORGE_GITHUB_CLIENT_ID=
 ATOMFORGE_GITHUB_CLIENT_SECRET=
 ATOMFORGE_GITEE_CLIENT_ID=
@@ -73,10 +73,10 @@ GitHub 登录使用 read:user / user:email 权限以及 PKCE；发布授权才�
 
 ## 数据升级与验证
 
-SQLite 使用 `scripts/init_local.py` / 启动脚本执行增量建表，升级前自动备份，保留用户数据。外部数据库执行新的 Alembic 增量迁移。新增表为 af_external_identities、af_oauth_flows、af_deliveries。
+SQLite 由 Docker 启动入口的 `scripts/bootstrap_db.py` 执行增量建表，升级前自动备份，保留用户数据。外部数据库执行新的 Alembic 增量迁移。新增表为 af_external_identities、af_oauth_flows、af_deliveries。
 
 自动测试覆盖账号绑定与隔离、Cookie / state 防重放、权限和构建门禁、令牌不回显、独立分支上传、Netlify 续传与上线前检查。真正的 OAuth 同意、远端仓库写入及公网部署需要实例运营者配置有效平台凭据，不能用模拟测试结果代替真实上线。
 
-登录页浏览器回归：启动本地前端后，在 `app/frontend` 运行 `pnpm test:auth`（默认 `http://127.0.0.1:15173`，可用 `AUTH_TEST_ORIGIN` 修改）。测试独立浏览器会话、拦截全部 API 和平台授权响应，覆盖邮箱注册、密码错误、未开通提示、GitHub/Gitee 跳转和票据交换、取消授权，截图输出到 `node_modules/.auth-check`；不使用真实账号或密钥。
+登录页浏览器回归：启动本地前端后，在 `app/frontend` 运行 `pnpm test:auth`（默认 `http://127.0.0.1:8080`，可用 `AUTH_TEST_ORIGIN` 修改）。测试独立浏览器会话、拦截全部 API 和平台授权响应，覆盖邮箱注册、密码错误、未开通提示、GitHub/Gitee 跳转和票据交换、取消授权，截图输出到 `node_modules/.auth-check`；不使用真实账号或密钥。
 
 参考：[GitHub OAuth](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)、[Gitee OAuth](https://gitee.com/api/v5/oauth_doc)、[Netlify 部署 API](https://docs.netlify.com/api-and-cli-guides/api-guides/get-started-with-api/)、[Netlify API 定义](https://github.com/netlify/open-api)。

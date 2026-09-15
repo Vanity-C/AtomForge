@@ -18,7 +18,7 @@ from services.af_projects import AfProjectService
 from services.aihub import AIHubService
 from services.generation import MODELS, active_run_limit
 from services.model_catalogue import validate_model, provider_for
-from services import codex_provider
+from services import codex_provider, task_control, model_output
 from services.leadership import Replan
 from services.browser_tests import TEST_GUIDANCE
 
@@ -65,7 +65,10 @@ def merge_patch(base, patch):
         if not isinstance(path,str) or not PATH.fullmatch(path) or path not in result: raise ValueError('局部修改必须指向现有项目文件')
         if path in changed or path in delete: raise ValueError('同一文件不能同时完整写入、局部修改或删除')
         if not isinstance(old,str) or not old or not isinstance(new,str): raise ValueError('局部修改需要非空 old 与字符串 new')
-        if result[path]['content'].count(old)!=1: raise ValueError(f'{path} 的 old 片段必须与当前代码精确且唯一匹配，请重新读取 currentFiles 并补充定位上下文')
+        if result[path]['content'].count(old)!=1:
+            from services.patch_conflicts import PatchConflictError
+            original=next(file['content'] for file in base if file['path']==path)
+            raise PatchConflictError(path,result[path]['content'],old,new,original_source=original)
         result[path]['content']=result[path]['content'].replace(old,new,1)
         if len(result[path]['content'].encode())>200000: raise ValueError('生成文件无效或过大')
     for p in delete: result.pop(p,None)
@@ -94,6 +97,7 @@ async def retry_transient(operation, on_retry):
             return await operation()
         except (APIStatusError, APIConnectionError, HTTPException, httpx.TransportError, TimeoutError) as exc:
             status=getattr(exc,'status_code',None)
+            if isinstance(exc, RunnerQueueTimeout): raise
             transient=status in {408,429,500,502,503,504} if status is not None else True
             if not transient or attempt==2: raise
             await on_retry(attempt+1)
@@ -103,6 +107,30 @@ async def retry_transient(operation, on_retry):
 class RunnerUnavailable(HTTPException):
     def __init__(self):
         super().__init__(503, '验证服务尚未就绪，已保留代码和进度。服务恢复后可继续验收，无需重新描述需求。')
+
+
+class RunnerQueueTimeout(RunnerUnavailable):
+    def __init__(self):
+        super().__init__()
+        self.detail='验证资源等待超时，代码已保留。请继续任务，从验收接着执行，无需重新生成。'
+
+
+RUNNER_QUEUE_TIMEOUT = 120
+
+
+async def wait_runner_slot(operation, on_wait=None):
+    deadline=time.monotonic()+RUNNER_QUEUE_TIMEOUT
+    last_notice=0
+    while True:
+        try:return await operation()
+        except HTTPException as exc:
+            if exc.status_code!=429:raise
+            remaining=deadline-time.monotonic()
+            if remaining<=0:raise RunnerQueueTimeout() from exc
+            if on_wait and time.monotonic()-last_notice>=10:
+                await on_wait()
+                last_notice=time.monotonic()
+            await asyncio.sleep(min(2,remaining))
 
 
 async def ensure_runner_ready():
@@ -129,7 +157,7 @@ async def runner_build(files, tests=None, edit=None):
 
 def can_resume_verification(result, error):
     return bool(result.get('draft_files') and (result.get('error_code') == 'runner_unavailable'
-        or '构建服务不可用' in error or '验证服务尚未就绪' in error))
+        or '构建服务不可用' in error or '验证服务尚未就绪' in error or '验证队列繁忙' in error))
 
 
 async def get_run(owner, run_id):
@@ -147,9 +175,12 @@ async def get_run(owner, run_id):
 
 
 async def change(run_id, **values):
-    async with db_manager.session() as db:
+    async with event_lock, db_manager.session() as db:
         r=await db.get(StudioRun,run_id)
         if not r: raise asyncio.CancelledError()
+        if r.status=='cancelled':
+            if values.get('status')=='cancelled':return
+            raise asyncio.CancelledError()
         for k,v in values.items(): setattr(r,k,json.dumps(v,ensure_ascii=False) if k in {'result','payload','events'} else v)
         await db.commit()
 
@@ -178,16 +209,16 @@ def parse_model_json(text):
     return value
 
 
-async def model_call(owner,project_id,run_id,model,stage,messages,max_tokens=12000,temperature=.25,agent_team=None):
+async def model_call(owner,project_id,run_id,model,stage,messages,temperature=.25,agent_team=None):
     from services.budget import check_budget
     await check_budget(owner)
     from services.agent_profiles import snapshot, prompt_for, ROLE_IDS
-    role=stage.removeprefix('team_').removeprefix('chat_')
+    role=stage.removeprefix('team_').removeprefix('chat_').removesuffix('_batch')
     if role=='test_diagnosis':role='qa'
-    if role=='plan':role='leader'
+    if role=='plan':role='engineer'
     if role not in ROLE_IDS:role='engineer'
     messages=[dict(m) for m in messages]
-    if stage in {'plan','code','repair'} or stage.startswith(('team_','chat_')):
+    if stage.removesuffix('_batch') in {'plan','code','repair'} or stage.startswith(('team_','chat_')):
         if agent_team is None:
             async with db_manager.session() as db:
                 run=await db.get(StudioRun,run_id) if run_id else None
@@ -204,20 +235,27 @@ async def model_call(owner,project_id,run_id,model,stage,messages,max_tokens=120
         for format_attempt in range(2):
             async def request():
                 await check_budget(owner)
-                async with asyncio.timeout(180):
-                    if is_codex:
-                        return await codex_provider.complete(model, current_messages)
-                    return await client.chat.completions.create(model=model,messages=current_messages,max_tokens=max_tokens,temperature=temperature if not format_attempt else .1,extra_body={'thinking':{'type':'disabled'}},response_format={'type':'json_object'})
-            role=stage.removeprefix('team_').removeprefix('chat_')
+                if is_codex:
+                    return await task_control.bounded(codex_provider.complete(model, current_messages),180)
+                async def progress(characters):
+                    if run_id:
+                        await event(run_id,'model.generate','模型正在持续生成，当前输出正常接收中。',
+                                    role=role,kind='activity',state='running',received_characters=characters)
+                return await model_output.complete(client,model,current_messages,
+                    temperature=temperature if not format_attempt else .1,progress=progress)
+            role=stage.removeprefix('team_').removeprefix('chat_').removesuffix('_batch')
             if role=='test_diagnosis':role='qa'
-            if role=='plan':role='leader'
+            if role=='plan':role='engineer'
             if role in {'code','repair'}: role='engineer'
             response=await retry_transient(request,lambda attempt:event(run_id,'recovering',f'模型连接暂时不稳定，正在重试当前步骤（{attempt}/2），无需重新提交需求。',role=role,kind='activity',state='recovering'))
+            task_control.check()
             usage=response.usage
             async with db_manager.session() as db:
                 db.add(StudioUsage(owner=str(owner),project_id=project_id,run_id=run_id,model=model,stage=stage,input_tokens=usage.prompt_tokens if usage else 0,output_tokens=usage.completion_tokens if usage else 0))
                 await db.commit()
             if response.choices[0].finish_reason=='length':
+                if stage.endswith('_batch'):
+                    raise OutputLimitError('当前增量批次达到输出限制，需要缩小批次')
                 if format_attempt: raise OutputLimitError('本次输出仍未能完整返回，已保留代码与交接进度；可继续此任务或拆分本次修改。')
                 await event(run_id,'recovering','正在精简重复输出并重新整理本次修改，已有文件与需求会保留。',role=role,kind='activity',state='recovering')
                 current_messages=[*messages,{'role':'user','content':'上一轮输出达到长度限制，未应用任何截断代码。不要重复原来的整文件输出。已有文件必须优先用 edits 精确局部修改，仅新增文件返回完整 files；只修改本次需求涉及的片段，保留其他功能。若是交接文档则精简描述和重复条目，完整保留必要字段。请重新返回一个完整 JSON。'}]
@@ -232,7 +270,9 @@ async def model_call(owner,project_id,run_id,model,stage,messages,max_tokens=120
                 current_messages = [*messages, {'role':'assistant','content':text}, {'role':'user','content':'上一条不是有效的单个 JSON 对象。请保留所有所需字段和完整代码，修正为一个严格合法的 JSON 对象。不要 Markdown 围栏、解释或多个并列 JSON；文件放在同一个 files 数组内。'}]
 
     finally:
-        if service and service.client: await service.client.close()
+        if service and service.client:
+            try:await task_control.bounded(service.client.close(),3)
+            except Exception:pass  # Cleanup failure must not hide the original outcome.
 
 
 async def traced_tool(run_id, role, tool, inputs, operation, summarize):
@@ -249,16 +289,16 @@ async def traced_tool(run_id, role, tool, inputs, operation, summarize):
     return result
 
 
-async def call_model(owner,project_id,run_id,model,stage,messages,max_tokens=12000,temperature=.25,agent_team=None,event_role=None):
+async def call_model(owner,project_id,run_id,model,stage,messages,temperature=.25,agent_team=None,event_role=None):
     from services.leadership import apply_feedback
     await apply_feedback(run_id)
-    role=stage.removeprefix('team_')
+    role=stage.removeprefix('team_').removesuffix('_batch')
     if role=='test_diagnosis':role='qa'
     if role in {'code','repair'}: role='engineer'
-    if role=='plan':role='leader'
+    if role=='plan':role='engineer'
     kwargs={'agent_team':agent_team} if agent_team is not None else {}
     return await traced_tool(run_id,event_role or role,'model.generate',{'model':model,'stage':stage},
-        lambda:model_call(owner,project_id,run_id,model,stage,messages,max_tokens=max_tokens,temperature=temperature,**kwargs),
+        lambda:model_call(owner,project_id,run_id,model,stage,messages,temperature=temperature,**kwargs),
         lambda r:{'summary':r.get('summary',r.get('goal','模型已返回结构化产出')),'files':patch_paths(r)})
 
 
@@ -266,13 +306,14 @@ async def checked_build(run_id, files, tests=None, role='qa'):
     from services.leadership import apply_feedback
     await apply_feedback(run_id)
     return await traced_tool(run_id,role,'runner.build_and_test',{'files':[f['path'] for f in files],'tests':tests or []},
-        lambda:retry_transient(lambda:runner_build(files,tests),lambda attempt:event(run_id,'recovering',f'验证连接暂未完成，正在重新连接（{attempt}/2）。代码已保存，不会重新生成。',role=role,kind='activity',state='recovering')),lambda r:{'ok':r.get('ok'),'logs':r.get('logs',[]),'error':r.get('error',''),**({'failure':r['failure']} if r.get('failure') else {})})
+        lambda:retry_transient(lambda:wait_runner_slot(lambda:runner_build(files,tests),lambda:event(run_id,'recovering','验证资源正在使用中，正在排队等待空闲；代码已保存，空闲后自动继续。',role=role,kind='activity',state='recovering')),lambda attempt:event(run_id,'recovering',f'验证连接暂未完成，正在重新连接（{attempt}/2）。代码已保存，不会重新生成。',role=role,kind='activity',state='recovering')),lambda r:{'ok':r.get('ok'),'logs':r.get('logs',[]),'error':r.get('error',''),**({'failure':r['failure']} if r.get('failure') else {})})
 
 
 async def start(owner, project_id, instruction, model, mode=None,temperature=.35,interactive=True, retry_of=None):
     await validate_model(model)
     if mode is not None and mode not in {'build','race','team'}: raise HTTPException(400,'未知运行模式')
     async with start_lock, db_manager.session() as db:
+        task_control.check()
         service=AfProjectService(db,str(owner)); project=await service.get_project(project_id)
         await service._load_owned_project(project_id,write=True)
         mode = mode or project['agent_mode']
@@ -293,7 +334,7 @@ async def start(owner, project_id, instruction, model, mode=None,temperature=.35
         payload['temperature']=temperature
         payload['interactive']=interactive
         from services.agent_profiles import snapshot
-        payload['agents']=await snapshot(owner,db)
+        payload['agents']=await snapshot(owner,db,mode=mode)
         resume_result = {}
         if retry_of:
             previous = await db.get(StudioRun, retry_of)
@@ -314,10 +355,12 @@ async def start(owner, project_id, instruction, model, mode=None,temperature=.35
                     payload['confirmed'] = old_payload.get('confirmed', [])
                     if old_result.get('draft_files'):
                         resume_result['draft_files'] = old_result['draft_files']
+                    if old_result.get('code_checkpoint'):
+                        resume_result['code_checkpoint'] = old_result['code_checkpoint']
                     payload['previousError'] = previous.error
                     # A saved implementation should be checked before asking for
                     # more code, including failures caused by a faulty test suite.
-                    if old_result.get('draft_files') and old_result.get('team', {}).get('engineer'):
+                    if old_result.get('draft_files') and old_result.get('team', {}).get('engineer') and not old_result.get('code_checkpoint'):
                         resume_result['team'] = old_result['team']
                         # Old default budgets otherwise survive indefinitely in
                         # the saved leader document. Upgrade only legacy defaults;
@@ -342,13 +385,18 @@ async def start(owner, project_id, instruction, model, mode=None,temperature=.35
                     payload['instruction'] += '\n请保留此前用户已选择的业务规则：\n' + json.dumps(payload['decisions'], ensure_ascii=False)
             elif old_payload.get('base_version') == project['current_version']:
                 old_result = json.loads(previous.result)
-                if can_resume_verification(old_result, previous.error):
+                if old_result.get('draft_files') and old_result.get('code_checkpoint'):
+                    resume_result = {**old_result}
+                    resume_result.pop('resume_stage', None)
+                    resume_result.pop('error_code', None)
+                elif can_resume_verification(old_result, previous.error):
                     resume_result = {**old_result, 'resume_stage':'verification'}
                     resume_result.pop('error_code', None)
+                payload['previousError'] = previous.error
         db.add(StudioRun(id=run_id,owner=str(owner),project_id=project_id,payload=json.dumps(payload,ensure_ascii=False),result=json.dumps(resume_result,ensure_ascii=False)))
         await db.commit()
         await service.add_message(project_id,'user',instruction,'plan',0,model)
-        db.add(StudioConversation(project_id=project_id,owner=str(owner),run_id=run_id,sender='user',recipient='leader',kind='message',content=instruction))
+        db.add(StudioConversation(project_id=project_id,owner=str(owner),run_id=run_id,sender='user',recipient='leader' if mode=='team' else 'engineer',kind='message',content=instruction))
         await db.commit()
         tasks[run_id]=asyncio.create_task(execute(run_id,owner,project_id,payload))
         return {'id':run_id}
@@ -387,11 +435,11 @@ async def execute(run_id,owner,project_id,payload):
             except Replan:
                 async with db_manager.session() as db:
                     payload=json.loads((await db.get(StudioRun,run_id)).payload)
-        await change(run_id,status='interrupted',stage='leader',error='本轮调整较多，需求与草稿已保留，可继续任务。')
+        await change(run_id,status='interrupted',stage='leader' if payload.get('mode')=='team' else 'plan',error='本轮调整较多，需求与草稿已保留，可继续任务。')
     except asyncio.CancelledError:
         await change(run_id,status='cancelled',stage='cancelled',error='任务已停止；已保存版本不变')
     except Exception:
-        await change(run_id,status='interrupted',stage='leader',error='调度暂未完成，需求与草稿已保留，请继续任务。')
+        await change(run_id,status='interrupted',stage='leader' if payload.get('mode')=='team' else 'plan',error='调度暂未完成，需求与草稿已保留，请继续任务。')
     finally:
         if tasks.get(run_id) is asyncio.current_task():tasks.pop(run_id,None)
 
@@ -400,7 +448,11 @@ async def _execute(run_id,owner,project_id,payload):
     try:
         if not payload.get('agents'):
             from services.agent_profiles import snapshot
-            payload['agents']=await snapshot(owner)
+            payload['agents']=await snapshot(owner,mode=payload.get('mode','build'))
+            await change(run_id,payload=payload)
+        if payload.get('mode')!='team':
+            from services.agent_profiles import engineer_team
+            payload['agents']=engineer_team(payload['agents'])
             await change(run_id,payload=payload)
         await change(run_id,status='running')
         if payload.get('mode')=='team':
@@ -413,9 +465,9 @@ async def _execute(run_id,owner,project_id,payload):
         if resume_verification:
             plan = saved_result.get('plan', {})
         else:
-            await event(run_id,'plan','我先拆分本轮目标，再交给工程师实现与验证。',role='leader')
-            plan=await call_model(owner,project_id,run_id,payload['model'],'plan',[{'role':'system','content':'你是团队领导。当前为工程师模式，由你拆解任务并安排工程师实施和自测。返回 JSON {"goal":"目标","tasks":["分配给工程师的具体任务"],"acceptance":["可验证标准"]}。只规划当前需求，至多6项任务。不要声称已执行。'},{'role':'user','content':payload['instruction']}],1800)
-            await event(run_id,'plan',json.dumps(plan,ensure_ascii=False),role='leader',recipient='engineer',kind='handoff',output=plan)
+            await event(run_id,'plan','我先梳理本轮目标，随后完成实现与自测。',role='engineer')
+            plan=await call_model(owner,project_id,run_id,payload['model'],'plan',[{'role':'system','content':'你是唯一的应用工程师，独立完成规划、实现和自测。返回 JSON {"goal":"目标","tasks":["本轮具体任务"],"acceptance":["可验证标准"]}。只规划当前需求，至多6项任务。不要安排其他智能体，不要声称已执行。'},{'role':'user','content':payload['instruction']}])
+            await event(run_id,'plan',json.dumps(plan,ensure_ascii=False),role='engineer',recipient='user',kind='summary',output=plan)
         from models.studio import StudioCloud
         async with db_manager.session() as db:
             cloud=await db.get(StudioCloud,project_id)
@@ -426,7 +478,13 @@ async def _execute(run_id,owner,project_id,payload):
         models=[payload['model']]
         if payload['mode']=='race': models=[payload['model']]+[m for m in sorted(MODELS) if m!=payload['model']]
         async def generate_candidate(model):
-            files=payload['files']; failure=''
+            from services.code_batches import generate_patch
+            code_checkpoint = dict(saved_result.get('code_checkpoint', {})) if payload['mode']!='race' else {}
+            files=saved_result.get('draft_files',payload['files']) if code_checkpoint else payload['files']
+            failure=''
+            async def save_batch(draft, checkpoint):
+                if payload['mode']!='race':
+                    await change(run_id,result={'draft_files':draft,'plan':plan,'code_checkpoint':checkpoint})
             for attempt in range(3):
                 if not (resume_verification and attempt == 0):
                     await event(run_id,'code' if not attempt else 'repair',f'{model}：'+('增量修改代码' if not attempt else f'根据检查错误进行第 {attempt} 次修复'))
@@ -437,8 +495,9 @@ async def _execute(run_id,owner,project_id,payload):
                         patch = {'summary':saved_result.get('summary','应用已更新'), 'tests':saved_result.get('developer_tests',[])}
                         await event(run_id,'test','继续验证已保存的代码，不重复生成。',role='engineer')
                     else:
-                        patch=await call_model(owner,project_id,run_id,model,'code' if not attempt else 'repair',[{'role':'system','content':ENGINEER},*payload['history'],{'role':'user','content':json.dumps(user,ensure_ascii=False)}],temperature=payload.get('temperature',.35))
+                        patch=await generate_patch(owner,project_id,run_id,model,'code' if not attempt else 'repair',[{'role':'system','content':ENGINEER},*payload['history'],{'role':'user','content':json.dumps(user,ensure_ascii=False)}],files,temperature=payload.get('temperature',.35),checkpoint=code_checkpoint,save=save_batch,prefer_batches=bool(not attempt and '输出' in payload.get('previousError','')))
                         files=merge_patch(files,patch)
+                        code_checkpoint.clear()
                         if payload['mode']!='race':
                             await change(run_id,result={'draft_files':files,'plan':plan,'developer_tests':patch.get('tests',[]),'summary':str(patch.get('summary','应用已更新'))[:2000]})
                         await event(run_id,'build','修改文件：'+', '.join(patch_paths(patch)))
@@ -490,20 +549,43 @@ async def _execute(run_id,owner,project_id,payload):
 
 
 async def cancel(owner,run_id):
-    run=await get_run(owner,run_id)
-    if run['stage']=='save':raise HTTPException(409,'正在保存版本，请等待完成')
-    if run['status']=='awaiting_input':
-        await change(run_id,status='cancelled',stage='cancelled',error='任务已停止；已保存版本不变')
-        from services.checkpoints import stop
-        stop(run_id)
-        return
-    task=tasks.get(run_id)
-    if task:
-        task.cancel()
-        try:await task
-        except asyncio.CancelledError:
-            await change(run_id,status='cancelled',stage='cancelled',error='任务已停止')
-        tasks.pop(run_id,None)
+    async with start_lock, event_lock, db_manager.session() as db:
+        row=await db.get(StudioRun,run_id)
+        if not row or row.owner!=str(owner):raise HTTPException(404,'任务不存在')
+        if row.stage=='save':raise HTTPException(409,'正在保存版本，请等待完成')
+        if row.status not in ACTIVE|{'awaiting_input'}:return
+        mark_stopped(row)
+        await db.commit()
+    stop_worker(run_id)
+
+
+def mark_stopped(row):
+    row.status='cancelled';row.stage='cancelled'
+    row.error='任务已强制停止；已保存版本、草稿和交接进度保留，可继续任务。'
+
+
+def stop_worker(run_id):
+    from services.checkpoints import stop
+    stop(run_id)
+    task_control.stop(tasks.pop(run_id,None))
+
+
+async def stop_project(owner,project_id):
+    """Fence persisted work before cancelling; never wait for workers under a lock."""
+    from services.agent_chat import stop_project_chat
+    async with start_lock, event_lock, db_manager.session() as db:
+        await AfProjectService(db,str(owner))._load_owned_project(project_id,write=True)
+        rows=(await db.execute(select(StudioRun).where(StudioRun.project_id==project_id,StudioRun.status.in_(ACTIVE|{'awaiting_input'})))).scalars().all()
+        ids=[];saving=[]
+        for row in rows:
+            if row.stage=='save':
+                saving.append(row.id)  # A version transaction already started must finish atomically.
+                continue
+            mark_stopped(row);ids.append(row.id)
+        await db.commit()
+        for run_id in ids:stop_worker(run_id)
+        chats=stop_project_chat(project_id)
+    return {'stopped_run_ids':ids,'stopped_chats':chats,'saving_run_ids':saving}
 
 
 async def recover():

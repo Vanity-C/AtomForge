@@ -5,8 +5,8 @@ param(
     [string[]]$Provider = @('github', 'gitee', 'netlify')
 )
 $ErrorActionPreference = 'Stop'
-$taskEnvPath = Join-Path $PSScriptRoot 'app/backend/.env.local'
-if (-not (Test-Path -LiteralPath $taskEnvPath)) { throw 'Run setup.ps1 first to create app/backend/.env.local.' }
+$taskEnvPath = Join-Path $PSScriptRoot '.env.docker'
+if (-not (Test-Path -LiteralPath $taskEnvPath)) { throw 'Copy .env.docker.example to .env.docker first.' }
 $taskLines = [System.Collections.Generic.List[string]]::new()
 foreach ($line in [System.IO.File]::ReadAllLines($taskEnvPath)) { $taskLines.Add($line) }
 
@@ -41,7 +41,7 @@ Write-Host 'GitHub: https://github.com/settings/applications/new'
 Write-Host 'Gitee:  https://gitee.com/oauth/applications'
 Write-Host 'Netlify: https://app.netlify.com/user/applications (OAuth application, not a personal access token)'
 $taskOrigin = Get-Setting 'ATOMFORGE_PUBLIC_ORIGIN'
-if (-not $taskOrigin) { $taskOrigin = 'http://127.0.0.1:15173' }
+if (-not $taskOrigin) { $taskOrigin = 'http://127.0.0.1:8080' }
 $taskOrigin = $taskOrigin.Trim().TrimEnd('/')
 $taskEnteredOrigin = Read-Host ('Browser-facing website origin [Enter keeps ' + $taskOrigin + ']')
 if ($taskEnteredOrigin.Trim()) { $taskOrigin = $taskEnteredOrigin.Trim().TrimEnd('/') }

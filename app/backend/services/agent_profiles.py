@@ -190,14 +190,27 @@ def resolve_member(team, target):
     return None
 
 
-async def snapshot(owner, db=None):
-    return active_team(await configuration(owner,db))
+def engineer_team(team, fallback=None):
+    person=next((p for p in roster(team) if p['role']=='engineer'),None)
+    person=deepcopy(person or fallback or next(p for p in DEFAULT_AGENTS if p['role']=='engineer'))
+    return {'engineer':person, MEMBER_PREFIX+person['id']:person}
+
+
+async def snapshot(owner, db=None, mode='team'):
+    config=await configuration(owner,db)
+    team=active_team(config)
+    return team if mode=='team' else engineer_team(team,next(p for p in config['agents'] if p['id']=='default-engineer'))
 
 
 def prompt_for(role, team):
     team=complete_team(team)
     person=team[role]
     public={k:person[k] for k in ('name','title','personality','responsibilities','greeting')}
+    if set(team)=={'engineer',MEMBER_PREFIX+person['id']}:
+        return ('\n你是本项目唯一的应用工程师，独立负责需求梳理、计划、实现、构建自测与修复；没有领导或其他协作智能体。'
+                '直接向用户汇报实际进展，不安排其他角色、不编造交接或同事发言。'
+                '\n使用以下个人配置：'+json.dumps(public,ensure_ascii=False)+
+                '\n保持当前阶段的 JSON 契约与验收要求，只依据真实产出描述完成状态。')
     peers=[{k:p[k] for k in ('id','role','name','title','responsibilities')}
            for p in roster(team) if p['id'] != person['id']]
     assignments = {r: team[r]['name'] for r in ROLE_IDS if r in team}

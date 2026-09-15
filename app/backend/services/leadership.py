@@ -58,6 +58,7 @@ async def queue_feedback(owner, project_id, instruction):
     from sqlalchemy import select,func
     from services import studio
     async with studio.start_lock, db_manager.session() as db:
+        studio.task_control.check()
         run=await db.scalar(select(StudioRun).where(StudioRun.project_id==project_id,StudioRun.owner==str(owner),StudioRun.status.in_({'queued','running','awaiting_input'})).order_by(StudioRun.created.desc()).limit(1))
         if not run:return None
         if run.stage=='save':raise HTTPException(409,'当前版本正在保存，请稍后把调整交给团队领导。')

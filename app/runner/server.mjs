@@ -4,6 +4,8 @@ import os from 'node:os';
 import {mkdtemp, mkdir, writeFile, readFile, rm} from 'node:fs/promises';
 import Babel from '@babel/standalone';
 import {build} from 'esbuild';
+import {jobWatchdog} from './job-watchdog.mjs';
+import {processHealth} from './process-health.mjs';
 import {chromium} from 'playwright';
 import {fileURLToPath} from 'node:url';
 
@@ -227,37 +229,54 @@ export async function check(artifact, steps=[], {capture=false}={}) {
 }
 
 let active=false;
+let activeSince=0;
+let cancelWatchdog=()=>{};
+function beginJob() {
+  active=true;
+  activeSince=Date.now();
+  cancelWatchdog=jobWatchdog(()=>{
+    console.error('Runner job exceeded 90 seconds; restarting to release stuck browser resources');
+    process.exit(1);
+  });
+}
+function endJob() {cancelWatchdog();active=false;activeSince=0;}
 let readyAt=0;
 let readiness;
 export async function ready() {
-  if(Date.now()-readyAt<15000)return {status:'ready'};
+  if(processHealth().pressure)throw new RunnerEnvironmentError('验证进程资源接近上限，正在回收恢复');
   // A health probe must not start a second Chromium beside a build/cover job.
   // A running job can keep using the last successful browser readiness proof.
   if(active) {
-    if(readyAt)return {status:'ready'};
+    if(Date.now()-activeSince>75000)throw new RunnerEnvironmentError('验证任务超时，正在恢复验证服务');
+    if(readyAt)return {status:'ready',busy:true};
     if(readiness)return readiness;
     throw new RunnerEnvironmentError('验证服务正在准备');
   }
-  active=true;
+  if(Date.now()-readyAt<15000)return {status:'ready'};
+  beginJob();
   if(!readiness)readiness=(async()=>{
     const artifact=await compile([{path:'App.jsx',content:'export default function App(){return <h1>runner-ready</h1>}'}]);
     const result=await check(artifact,[{action:'text',selector:'h1',value:'runner-ready'}]);
     if(!result.ok)throw new RunnerEnvironmentError(result.error);
     readyAt=Date.now();
     return {status:'ready'};
-  })().finally(()=>{readiness=undefined;active=false;});
+  })().finally(()=>{readiness=undefined;endJob();});
   return readiness;
 }
 const server=http.createServer(async(req,res)=>{
   const reply=(code,data)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(data));};
-  if(req.url==='/health') return reply(200,{status:'healthy',packages:PACKAGES});
+  if(req.url==='/health') {
+    const processes=processHealth();
+    return reply(200,{status:processes.pressure?'degraded':'healthy',processes,busy:active,active_for_ms:active?Date.now()-activeSince:0,packages:PACKAGES});
+  }
   if(req.url==='/ready') {
     try {return reply(200,await ready());}
     catch(error) {console.error('Runner readiness:',error.message);return reply(503,{code:'runner_unavailable',error:'构建或验证浏览器未就绪'});}
   }
   if(!['/build','/thumbnail'].includes(req.url) || req.method!=='POST') return reply(404,{error:'Not found'});
   if(active) return reply(429,{error:'构建服务忙，请稍后重试'});
-  active=true;
+  if(processHealth().pressure)return reply(503,{code:'runner_unavailable',error:'验证进程资源正在恢复'});
+  beginJob();
   let raw='';
   try {
     for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>(req.url==='/thumbnail'?10000000:2000000)) return reply(413,{error:'项目过大'});}
@@ -273,6 +292,6 @@ const server=http.createServer(async(req,res)=>{
     const {thumbnail,...verification}=result;
     reply(200,{...verification,artifact:result.ok?{...artifact,...(thumbnail?{thumbnail}:{})}:null,...(input.edit?{files}: {})});
   } catch(e){if(e instanceof RunnerEnvironmentError){readyAt=0;console.error(e.message);reply(503,{code:'runner_unavailable',error:'验证浏览器暂不可用'});}else reply(200,{ok:false,error:String(e.message).slice(0,5000),logs:[]});}
-  finally {active=false;}
+  finally {endJob();}
 });
 if(process.argv[1]===fileURLToPath(import.meta.url)) server.listen(Number(process.env.PORT||8001),'0.0.0.0');

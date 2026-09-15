@@ -1,0 +1,11 @@
+[Unit]
+Description=Check AtomForge runner health and task pressure
+
+[Timer]
+OnBootSec=60s
+OnUnitInactiveSec=15s
+AccuracySec=1s
+Unit=atomforge-runner-watchdog.service
+
+[Install]
+WantedBy=timers.target

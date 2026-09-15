@@ -7,7 +7,7 @@ const moduleUrl=source=>'data:text/javascript;base64,'+Buffer.from(ts.transpileM
 const studio=await readFile(new URL('../src/lib/studio.ts',import.meta.url),'utf8');
 const roles=moduleUrl(studio.slice(studio.indexOf('export const TEAM_ROLES'),studio.indexOf('export const agentLabel')));
 const source=await readFile(new URL('../src/lib/agentProfiles.ts',import.meta.url),'utf8');
-const {activeTeam,activeGroup,groupMembers,teamRoster,teamStages,conversationTarget,normalizeAgentConfiguration,FALLBACK_TEAM,DEFAULT_GROUP}=await import(moduleUrl(source.replace("'./studio'",JSON.stringify(roles))));
+const {engineerTeam,activeTeam,activeGroup,groupMembers,teamRoster,teamStages,conversationTarget,normalizeAgentConfiguration,FALLBACK_TEAM,DEFAULT_GROUP}=await import(moduleUrl(source.replace("'./studio'",JSON.stringify(roles))));
 const agents=Object.values(FALLBACK_TEAM);
 const config=(members,extra=[])=>({agents:[...agents,...extra],active:Object.fromEntries(agents.map(agent=>[agent.role,agent.id])),teams:[DEFAULT_GROUP,{id:'custom',name:'精简团队',description:'',color:'blue',member_ids:members}],active_team_id:'custom',revision:3});
 
@@ -99,4 +99,13 @@ test('repairing a cached missing team selection preserves a customized default r
     assert.deepEqual(teamRoster(activeTeam(normalized)).map(member=>member.profile.id),['default-qa']);
     assert.equal(normalized.revision,value.revision);
   }
+});
+
+
+test('engineer mode uses exactly one real engineer and falls back when the team has none',()=>{
+  const solo=engineerTeam(activeTeam(config(['default-leader','default-engineer','default-qa'])));
+  assert.deepEqual(teamRoster(solo).map(m=>m.profile.id),['default-engineer']);
+  assert.deepEqual(teamStages(solo).map(m=>m.id),['engineer']);
+  const fallback={...FALLBACK_TEAM.engineer,name:'My engineer'};
+  assert.equal(engineerTeam(activeTeam(config(['default-design'])),fallback).engineer.name,'My engineer');
 });

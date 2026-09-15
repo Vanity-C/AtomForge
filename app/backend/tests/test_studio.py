@@ -33,7 +33,8 @@ def test_model_format_retry_counts_both_requests(client,monkeypatch):
     async def create(**kwargs):
         calls.append(kwargs)
         content='{"goal":"counter"}\n{"tasks":[]}' if len(calls)==1 else '{"goal":"counter","tasks":["implement"]}'
-        return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=10,completion_tokens=20),choices=[SimpleNamespace(finish_reason='stop',message=SimpleNamespace(content=content))])
+        from model_stream_fixture import stream_response
+        return stream_response(SimpleNamespace(usage=SimpleNamespace(prompt_tokens=10,completion_tokens=20),choices=[SimpleNamespace(finish_reason='stop',message=SimpleNamespace(content=content))]))
     class FakeService:
         def __init__(self):self.client=self
         def _require_ai_client(self):return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))

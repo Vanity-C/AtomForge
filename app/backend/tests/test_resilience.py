@@ -73,7 +73,8 @@ def test_truncated_code_changes_strategy_without_applying_partial_json(client,mo
         calls.append(kwargs)
         finish='length' if exhausted or len(calls)==1 else 'stop'
         text='{"files":[' if finish=='length' else '{"edits":[{"path":"App.jsx","old":"old","new":"new"}],"tests":[]}'
-        return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=10,completion_tokens=20),choices=[SimpleNamespace(finish_reason=finish,message=SimpleNamespace(content=text))])
+        from model_stream_fixture import stream_response
+        return stream_response(SimpleNamespace(usage=SimpleNamespace(prompt_tokens=10,completion_tokens=20),choices=[SimpleNamespace(finish_reason=finish,message=SimpleNamespace(content=text))]))
     class FakeService:
         def __init__(self):self.client=self
         def _require_ai_client(self):return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))

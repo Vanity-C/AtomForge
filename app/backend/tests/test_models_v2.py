@@ -45,6 +45,8 @@ def test_codex_settings_survive_reload_and_validate_provider(client,monkeypatch)
         return {'items':[{'id':'gpt-test','provider':'codex','available':True}]}
     monkeypatch.setattr(model_catalogue,'catalogue',catalogue)
     owner,_=account(client)
+    default=client.get('/api/v1/af/settings',headers=owner).json()['settings']
+    assert default['provider']=='deepseek' and default['model']=='deepseek-flash'
     payload={'provider':'codex','model':'gpt-test','temperature_pct':35,'auto_preview':True}
     assert client.put('/api/v1/af/settings',headers=owner,json=payload).status_code==200
     assert client.get('/api/v1/af/settings',headers=owner).json()['settings']['model']=='gpt-test'

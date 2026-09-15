@@ -2,7 +2,8 @@ import {useState} from 'react';
 import {ArrowRight, Check, ChevronDown, CircleDashed, Flag, Loader2, PackageCheck, RotateCcw, ShieldCheck, Workflow} from 'lucide-react';
 import type {StudioRun} from '@/lib/studio';
 import {pipelineStages, type PipelineState} from '@/lib/pipeline';
-import {useStageTeam} from './AgentProvider';
+import {useModeTeam} from './AgentProvider';
+import {teamStages} from '@/lib/agentProfiles';
 import AgentAvatar from './AgentAvatar';
 import AgentPersona from './AgentPersona';
 import DeliveryBoard from './DeliveryBoard';
@@ -12,7 +13,7 @@ const labels:Record<PipelineState,string>={pending:'等待交接',active:'正在
 function StateIcon({state}:{state:PipelineState}){return state==='complete'?<Check/>:state==='active'?<Loader2 className="animate-spin"/>:<CircleDashed/>;}
 
 export default function TeamBoard({run,mode='team'}:{run:StudioRun|null;mode?:'team'|'build'}) {
-  const team=useStageTeam(run?.agents);
+  const team=teamStages(useModeTeam(mode,run?.agents));
   const stages=pipelineStages(run,mode);
   const [selection,setSelection]=useState<{runId?:string;stage:string}|null>(null);
   const recommended=stages.find(s=>['active','waiting','blocked'].includes(s.state))||stages.find(s=>s.state==='pending')||stages[stages.length-1];
@@ -29,7 +30,7 @@ export default function TeamBoard({run,mode='team'}:{run:StudioRun|null;mode?:'t
   const output=selected.output;
   if(mode==='team'&&run?.result.workflow)return <DeliveryBoard run={run}/>;
   return <section className="pipeline-board" aria-label={mode==='team'?'团队协作流水线':'工程师工作流水线'}>
-    {(run?.result.team?.leader||!run)&&<div className="pipeline-lead"><AgentAvatar role="leader" person={team.find(r=>r.id==='leader')?.profile} className="h-12 w-12"/><div><span>团队领导 · {team.find(r=>r.id==='leader')?.alias}</span><strong>{run?.result.team?.leader?.goal||'你说目标，我来安排团队。'}</strong><p>{run?.result.team?.leader?.summary||'由领导拆解阶段、分配任务，协调成员完成实现与独立验收。'}</p></div></div>}
+    {mode==='team'&&(run?.result.team?.leader||!run)&&<div className="pipeline-lead"><AgentAvatar role="leader" person={team.find(r=>r.id==='leader')?.profile} className="h-12 w-12"/><div><span>团队领导 · {team.find(r=>r.id==='leader')?.alias}</span><strong>{run?.result.team?.leader?.goal||'你说目标，我来安排团队。'}</strong><p>{run?.result.team?.leader?.summary||'由领导拆解阶段、分配任务，协调成员完成实现与独立验收。'}</p></div></div>}
     <header className="pipeline-heading"><span className="pipeline-heading-icon"><Workflow size={20}/></span><div><h3>{mode==='team'?'从想法，到交付':'一步步，把想法做出来'}</h3><p>{mode==='team'?'每一棒有人接，每一步有交代。':'从计划到验证，进展清晰可见。'}</p></div><div className="pipeline-count"><strong>{completed}<span> / {stages.length}</span></strong><small>阶段已完成</small></div></header>
     <div className="pipeline-track" style={{gridTemplateColumns:`repeat(${stages.length}, minmax(0, 1fr))`}}>
       {stages.map((stage,index)=>{
@@ -49,7 +50,7 @@ export default function TeamBoard({run,mode='team'}:{run:StudioRun|null;mode?:'t
       <div className={`pipeline-progress-note is-${selected.state}`} aria-live={selected.state==='active'?'polite':undefined}><StateIcon state={selected.state}/><div><strong>{selected.state==='blocked'?'已有进度保留，可通过顶部按钮继续任务':selected.state==='pending'?'等待前序伙伴交接':selected.state==='active'?`${owner.alias} 正在处理这一阶段`:selected.state==='waiting'?(selected.id==='qa'?'等待修复后重新验收':'等待你确认关键选择'):'这一阶段的产出已就绪'}</strong>{selected.last&&<p>{selected.last.message.startsWith('{')?'详细内容见下方交接文档。':selected.last.message}</p>}</div></div>
       {output&&<details className="pipeline-output"><summary><span>{selected.id==='qa'?'验收报告与测试记录':'实际交接文档'}</span><ChevronDown size={15}/></summary><div className="pipeline-output-body"><p>{output.summary||output.goal}</p>{!!(output.items||output.tasks)?.length&&<ul>{(output.items||output.tasks||[]).map((item,i)=><li key={i}>{item}</li>)}</ul>}{!!output.acceptance?.length&&<><h5>验收标准</h5><ul>{output.acceptance.map((item,i)=><li key={i}>{item}</li>)}</ul></>}{!!output.issues?.length&&<><h5>需要修复</h5><ul>{output.issues.map((item,i)=><li key={i}>{item}</li>)}</ul></>}{!!output.tests?.length&&<><h5>{selected.id==='qa'?`独立浏览器测试 · ${output.verified?'已执行通过':'尚未通过执行验证'}`:'开发自测步骤'}</h5><ol>{output.tests.map((test,i)=><li key={i}><code>{test.action} {test.selector} {test.value}</code></li>)}</ol></>}</div></details>}
     </div>
-    {!!run?.result.team?.leader?.adjustments?.length&&<details className="pipeline-output"><summary>领导的调整记录 · {run.result.team.leader.adjustments.length} 次</summary><div className="pipeline-output-body">{run.result.team.leader.adjustments.map((adjustment,index)=><div key={index}><h5>第 {adjustment.attempt} 次修复安排</h5><p>{adjustment.summary}</p><ul>{adjustment.items.map((task,i)=><li key={i}>{task}</li>)}</ul></div>)}</div></details>}
+    {mode==='team'&&!!run?.result.team?.leader?.adjustments?.length&&<details className="pipeline-output"><summary>领导的调整记录 · {run.result.team.leader.adjustments.length} 次</summary><div className="pipeline-output-body">{run.result.team.leader.adjustments.map((adjustment,index)=><div key={index}><h5>第 {adjustment.attempt} 次修复安排</h5><p>{adjustment.summary}</p><ul>{adjustment.items.map((task,i)=><li key={i}>{task}</li>)}</ul></div>)}</div></details>}
     <footer className={`pipeline-finish ${delivered?'is-delivered':''}`}><Flag size={19}/><div><strong>{delivered?`${run.result.version?`v${run.result.version} `:''}已交付`:'下一站，可运行的作品'}</strong><p>{delivered?'本轮验证通过，最新作品已在预览中就绪。':'通过验证后保存正式版本，让每次交付都有依据。'}</p></div>{delivered&&<Check size={18}/>}</footer>
   </section>;
 }

@@ -270,31 +270,10 @@ class AfProjectService:
             raise HTTPException(status_code=400, detail="没有可保存的代码文件")
         return cleaned
 
-    async def commit_files(
-        self,
-        project_id: int,
-        files: List[Dict[str, Any]],
-        summary: str,
-        prompt: str,
-        source: str,
-        expected_version: int | None = None,
-    ) -> Dict[str, Any]:
-        """Replace the project's file set and persist an immutable snapshot."""
-        project = await self._load_owned_project(project_id, write=True)
-        if expected_version is not None and int(project.current_version or 0)!=expected_version:
-            raise HTTPException(409,'项目已有新版本，请刷新后合并修改')
-        cleaned = self._validate_files(files)
-        next_version = int(project.current_version or 0) + 1
-        # Compare-and-swap prevents overlapping editor/agent commits from
-        # overwriting a version that was saved while this request was reading.
-        claimed = await self.db.execute(update(Projects).where(
-            Projects.id == project.id,
-            func.coalesce(Projects.current_version, 0) == next_version - 1,
-        ).values(current_version=next_version).execution_options(synchronize_session=False))
-        if claimed.rowcount != 1:
-            await self.db.rollback()
-            raise HTTPException(409, '项目已有新版本，请刷新后重试')
-
+    async def _replace_files(
+        self, project: Projects, cleaned: List[Dict[str, str]], version: int
+    ) -> None:
+        """Restore the working tree without changing immutable version history."""
         stmt = select(Project_files).where(
             Project_files.project_id == project.id,
             Project_files.user_id == self.owner_id,
@@ -306,7 +285,7 @@ class AfProjectService:
             if row is not None:
                 row.content = item["content"]
                 row.language = item["language"]
-                row.version = next_version
+                row.version = version
                 row.is_deleted = False
             else:
                 self.db.add(
@@ -316,7 +295,7 @@ class AfProjectService:
                         path=item["path"],
                         language=item["language"],
                         content=item["content"],
-                        version=next_version,
+                        version=version,
                         is_deleted=False,
                     )
                 )
@@ -325,6 +304,42 @@ class AfProjectService:
         for stale in existing.values():
             await self.db.delete(stale)
 
+        entry = next((p for p in ('App.tsx', 'App.jsx', 'App.ts', 'App.js') if any(f['path'] == p for f in cleaned)), cleaned[0]['path'])
+        project.current_version = version
+        project.status = "ready"
+        project.entry_file = entry
+
+    async def commit_files(
+        self,
+        project_id: int,
+        files: List[Dict[str, Any]],
+        summary: str,
+        prompt: str,
+        source: str,
+        expected_version: int | None = None,
+    ) -> Dict[str, Any]:
+        """Replace the project's file set and persist an immutable snapshot."""
+        project = await self._load_owned_project(project_id, write=True)
+        current_version = int(project.current_version or 0)
+        if expected_version is not None and current_version != expected_version:
+            raise HTTPException(409, '项目版本已变化，请刷新后合并修改')
+        cleaned = self._validate_files(files)
+        highest_version = await self.db.scalar(select(func.max(Project_versions.version)).where(
+            Project_versions.project_id == project.id,
+            Project_versions.user_id == self.owner_id,
+        )) or 0
+        # A rollback changes the active version, never the history's high-water mark.
+        next_version = max(current_version, highest_version) + 1
+        claimed = await self.db.execute(update(Projects).where(
+            Projects.id == project.id,
+            func.coalesce(Projects.current_version, 0) == current_version,
+            Projects.updated_at == project.updated_at,
+        ).values(current_version=next_version).execution_options(synchronize_session=False))
+        if claimed.rowcount != 1:
+            await self.db.rollback()
+            raise HTTPException(409, '项目版本已变化，请刷新后重试')
+
+        await self._replace_files(project, cleaned, next_version)
         self.db.add(
             Project_versions(
                 user_id=self.owner_id,
@@ -336,11 +351,6 @@ class AfProjectService:
                 source=(source or "agent")[:40],
             )
         )
-
-        entry = next((p for p in ('App.tsx','App.jsx','App.ts','App.js') if any(f['path']==p for f in cleaned)),cleaned[0]['path'])
-        project.current_version = next_version
-        project.status = "ready"
-        project.entry_file = entry
 
         await self.db.commit()
         return {"version": next_version, "files": cleaned, "project": serialize_project(project)}
@@ -361,9 +371,14 @@ class AfProjectService:
         rows = (await self.db.execute(stmt)).scalars().all()
         return [serialize_version(row) for row in rows]
 
-    async def rollback(self, project_id: int, version_id: int) -> Dict[str, Any]:
-        """Roll back by re-committing an older snapshot as a new version."""
-        await self._load_owned_project(project_id, write=True)
+    async def rollback(
+        self, project_id: int, version_id: int, expected_version: int | None = None
+    ) -> Dict[str, Any]:
+        """Activate an existing snapshot, preserving every historical version."""
+        project = await self._load_owned_project(project_id, write=True)
+        current_version = int(project.current_version or 0)
+        if expected_version is not None and current_version != expected_version:
+            raise HTTPException(409, '项目版本已变化，请刷新后再回滚')
         stmt = select(Project_versions).where(
             Project_versions.id == version_id,
             Project_versions.project_id == project_id,
@@ -381,13 +396,19 @@ class AfProjectService:
             raise HTTPException(status_code=400, detail="该版本快照为空，无法回滚")
 
         target_version = int(snapshot_row.version or 0)
-        return await self.commit_files(
-            project_id,
-            files,
-            summary=f"回滚到 v{target_version}",
-            prompt=snapshot_row.prompt or "",
-            source="rollback",
-        )
+        cleaned = self._validate_files(files)
+        claimed = await self.db.execute(update(Projects).where(
+            Projects.id == project.id,
+            func.coalesce(Projects.current_version, 0) == current_version,
+            Projects.updated_at == project.updated_at,
+        ).values(current_version=target_version).execution_options(synchronize_session=False))
+        if claimed.rowcount != 1:
+            await self.db.rollback()
+            raise HTTPException(409, '项目版本已变化，请刷新后再回滚')
+
+        await self._replace_files(project, cleaned, target_version)
+        await self.db.commit()
+        return {"version": target_version, "files": cleaned, "project": serialize_project(project)}
 
     # ------------------------------------------------------------- messages
 

@@ -1,7 +1,7 @@
 /**
  * Generation settings: pick the provider/model used by the agent.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {Link} from 'react-router-dom';
 import UsagePanel from '@/components/UsagePanel';
 import { useRecoveringQuery } from '@/hooks/useRecoveringQuery';
@@ -21,6 +21,7 @@ import {
   DEFAULT_PROFILE,
   type ModelCatalogue,
   type GenerationProfile,
+  type ModelOption,
 } from '@/lib/agent/modelProvider';
 
 export default function Settings() {
@@ -28,41 +29,86 @@ export default function Settings() {
   const [profile, setProfile] = useState<GenerationProfile>(DEFAULT_PROFILE);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [switchingModel, setSwitchingModel] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [reload, setReload] = useState(0);
+  const savedProfile = useRef<GenerationProfile | null>(null);
+  const busy = useRef(false);
+  const revision = useRef(0);
   const catalogue = useRecoveringQuery<ModelCatalogue>('/api/v1/studio/models');
 
   // The profile belongs to the signed-in AtomForge account.
   useEffect(() => {
+    const current = ++revision.current;
+    savedProfile.current = null;
+    busy.current = false;
+    setSaving(false);
+    setSwitchingModel(null);
+    setLoadError('');
     if (authState === 'loading') return;
     if (authState === 'anonymous') {
       setLoading(false);
       return;
     }
-    let mounted = true;
     setLoading(true);
     loadProfile()
       .then((next) => {
-        if (mounted) setProfile(next);
+        if (revision.current === current) {
+          savedProfile.current = next;
+          setProfile(next);
+        }
       })
-      .catch(() => {
-        if (mounted) setProfile(DEFAULT_PROFILE);
+      .catch((error) => {
+        if (revision.current === current) setLoadError(errorMessage(error));
       })
       .finally(() => {
-        if (mounted) setLoading(false);
+        if (revision.current === current) setLoading(false);
       });
     return () => {
-      mounted = false;
+      revision.current++;
     };
-  }, [authState]);
+  }, [authState, user?.id, reload]);
+
+  const handleModelSelect = async (model: ModelOption) => {
+    if (busy.current || !savedProfile.current || model.available === false || model.id === profile.model) return;
+    busy.current = true;
+    const current = revision.current;
+    setSwitchingModel(model.id);
+    try {
+      // Keep unsaved slider/switch edits local when saving only the model choice.
+      const next = await saveProfile({ ...savedProfile.current, model: model.id, provider: model.provider });
+      if (current !== revision.current) return;
+      savedProfile.current = next;
+      setProfile(p => ({ ...p, model: next.model, provider: next.provider }));
+      toast.success('模型已切换', { description: `后续生成将使用 ${model.label}` });
+    } catch (error) {
+      if (current === revision.current) toast.error('模型切换失败，仍使用原模型', { description: errorMessage(error) });
+    } finally {
+      if (current === revision.current) {
+        busy.current = false;
+        setSwitchingModel(null);
+      }
+    }
+  };
 
   const handleSave = async () => {
+    if (busy.current || !savedProfile.current) return;
+    busy.current = true;
+    const current = revision.current;
     setSaving(true);
     try {
-      await saveProfile(profile);
-      toast.success('设置已保存', { description: `后续生成将使用 ${profile.model}` });
+      const next = await saveProfile(profile);
+      if (current !== revision.current) return;
+      savedProfile.current = next;
+      setProfile(next);
+      toast.success('其他设置已保存');
     } catch (error) {
-      toast.error('保存失败', { description: errorMessage(error) });
+      if (current === revision.current) toast.error('保存失败', { description: errorMessage(error) });
     } finally {
-      setSaving(false);
+      if (current === revision.current) {
+        busy.current = false;
+        setSaving(false);
+      }
     }
   };
 
@@ -98,7 +144,15 @@ export default function Settings() {
 
           <section className="mt-8">
             <h2 className="text-base font-semibold">生成模型</h2>
-            <p className="mt-1 text-sm text-muted-foreground">选择用于代码生成的文本模型。</p>
+            <p className="mt-1 text-sm text-muted-foreground">点击模型即可自动保存，后续生成立即使用新的选择。</p>
+            <div className="my-4 flex gap-3 rounded-xl border border-primary/20 bg-accent/50 p-4">
+              <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+              <div>
+                <p className="text-sm font-semibold">当前版本推荐 DeepSeek Flash · 性价比首选</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">deepseek-flash 是每位用户的默认模型，适合日常应用生成与多轮修改。你也可以随时切换，已保存的个人选择会被保留。</p>
+              </div>
+            </div>
+            {loadError && <div role="alert" className="my-3 text-sm text-destructive">设置加载失败：{loadError}<Button variant="ghost" size="sm" onClick={() => setReload(n => n + 1)}>重新加载设置</Button></div>}
             <Button variant="ghost" size="sm" disabled={catalogue.refreshing} onClick={() => void catalogue.refresh()}>{catalogue.refreshing ? '正在检测模型…' : '刷新可用模型'}</Button>
             {catalogue.waiting && <p role="status" className="text-sm text-muted-foreground">模型列表暂未同步，请稍后刷新。</p>}
             {catalogue.data?.providers.map(provider => <p key={provider.id} className="mt-2 text-xs text-muted-foreground">{provider.label}：{provider.error || '已连接'}</p>)}
@@ -111,15 +165,16 @@ export default function Settings() {
               </div>
             ) : (
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                {catalogue.data?.items.map((model) => {
+                {catalogue.data?.items.slice().sort((a, b) => Number(b.id === 'deepseek-flash') - Number(a.id === 'deepseek-flash')).map((model) => {
                   const selected = model.id === profile.model;
                   return (
                     <button
                       key={model.id}
                       type="button"
-                      disabled={model.available === false}
+                      disabled={model.available === false || saving || switchingModel !== null || !!loadError}
                       aria-pressed={selected}
-                      onClick={() => setProfile((p) => ({ ...p, model: model.id, provider: model.provider }))}
+                      aria-busy={switchingModel === model.id}
+                      onClick={() => void handleModelSelect(model)}
                       className={`rounded-lg border p-4 text-left transition-colors duration-200 ease-out-quart disabled:opacity-50 ${
                         selected
                           ? 'border-primary bg-accent/60'
@@ -133,7 +188,7 @@ export default function Settings() {
                             {model.id}
                           </p>
                         </div>
-                        {selected ? (
+                        {switchingModel === model.id ? <Loader2 className="h-5 w-5 shrink-0 animate-spin text-primary" /> : selected ? (
                           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
                             <Check className="h-3 w-3" />
                           </span>
@@ -168,7 +223,7 @@ export default function Settings() {
                 {profile.provider === 'codex' ? 'GPT 使用 Codex 模型的默认推理设置，创造性滑块仅适用于 DeepSeek。' : '数值越低越稳定保守，越高越有创意但可能出错。'}
               </p>
               <Slider
-                disabled={profile.provider === 'codex'}
+                disabled={profile.provider === 'codex' || saving || loading || !!loadError}
                 value={[profile.temperaturePct]}
                 min={0}
                 max={100}
@@ -189,16 +244,18 @@ export default function Settings() {
               </div>
               <Switch
                 id="auto-preview"
+                disabled={saving || loading || !!loadError}
                 checked={profile.autoPreview}
                 onCheckedChange={(checked) => setProfile((p) => ({ ...p, autoPreview: checked }))}
               />
             </div>
           </section>
 
-          <div className="mt-6 flex justify-end">
-            <Button className="gap-2" disabled={saving || loading} onClick={handleSave}>
+          <div className="mt-6 flex items-center justify-between gap-3">
+            <p className="text-xs text-muted-foreground" role="status">{switchingModel ? '正在切换模型…' : '模型选择自动保存；下方按钮仅保存其他设置。'}</p>
+            <Button className="shrink-0 gap-2" disabled={saving || loading || switchingModel !== null || !!loadError} onClick={handleSave}>
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              保存设置
+              保存其他设置
             </Button>
           </div>
           <UsagePanel/>

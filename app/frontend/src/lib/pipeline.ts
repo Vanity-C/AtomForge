@@ -26,7 +26,7 @@ export function pipelineStages(run:StudioRun|null, mode:'team'|'build'='team') {
   });
   const specialists=planned?.length===5?planned:TEAM_PIPELINE.map(stage=>({...stage,gatekeeper:stage.id==='engineer'||stage.id==='qa'?'qa':leadership?'leader':stage.role}));
   const definitions=mode==='team'?(leadership?[{...LEADER_STAGE,gatekeeper:'leader'},...specialists]:specialists).map((stage,index,all)=>({...stage,next:all[index+1]?.id||'release'})):
-    BUILD_PIPELINE.map(stage=>({...stage,role:stage.id==='plan'&&leadership?'leader':stage.role,gatekeeper:stage.id==='plan'&&leadership?'leader':'engineer'}));
+    BUILD_PIPELINE.map(stage=>({...stage,gatekeeper:'engineer'}));
   const active=run?.status==='running';
   const terminal=!!run&&['error','interrupted','cancelled'].includes(run.status);
   const reversed=[...(run?.events||[])].reverse();

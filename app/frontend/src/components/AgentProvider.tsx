@@ -1,6 +1,6 @@
 import {createContext,useCallback,useContext,useEffect,useRef,useState,type ReactNode} from 'react';
 import {invoke,onAuthChange,readToken,errorMessage} from '@/lib/sdk';
-import {activeTeam,FALLBACK_TEAM,normalizeAgentConfiguration,teamRoster,teamStages,type AgentConfiguration,type AgentTeam} from '@/lib/agentProfiles';
+import {activeTeam,engineerTeam,FALLBACK_TEAM,normalizeAgentConfiguration,teamRoster,teamStages,type AgentConfiguration,type AgentTeam} from '@/lib/agentProfiles';
 
 const Context=createContext<{config?:AgentConfiguration;team:AgentTeam;loading:boolean;error:string;refresh:()=>Promise<void>;save:(value:AgentConfiguration)=>Promise<AgentConfiguration>}>({team:FALLBACK_TEAM,loading:false,error:'',refresh:async()=>{},save:async value=>value});
 export function AgentProvider({children}:{children:ReactNode}) {
@@ -32,3 +32,8 @@ export function useAgentTeam(snapshot?:AgentTeam|null){const {team}=useAgents();
 export function useTeam(snapshot?:AgentTeam|null){return teamRoster(useAgentTeam(snapshot));}
 /** Stage-based consumers retain execution roles while showing their real assigned person. */
 export function useStageTeam(snapshot?:AgentTeam|null){return teamStages(useAgentTeam(snapshot));}
+export function useModeTeam(mode:'build'|'team', snapshot?:AgentTeam|null){
+  const team=useAgentTeam(snapshot);
+  const {config}=useAgents();
+  return mode==='team'?team:engineerTeam(team,config?.agents.find(agent=>agent.id==='default-engineer'));
+}

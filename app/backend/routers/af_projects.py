@@ -58,6 +58,7 @@ class CommitFilesRequest(BaseModel):
 
 class RollbackRequest(BaseModel):
     version_id: int
+    expected_version: int | None = Field(default=None, ge=0)
 
 
 class AddMessageRequest(BaseModel):
@@ -208,7 +209,7 @@ async def rollback(
     current_user: Af_users = Depends(get_af_user),
 ):
     """Roll back an owned project to a previous snapshot."""
-    result = await _service(db, current_user).rollback(project_id, data.version_id)
+    result = await _service(db, current_user).rollback(project_id, data.version_id, data.expected_version)
     return result
 
 

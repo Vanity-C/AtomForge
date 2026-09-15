@@ -13,3 +13,6 @@ else
     docker compose --env-file .env.production -f compose.production.yaml up -d --build --wait
 fi
 docker compose --env-file .env.production -f compose.production.yaml ps
+if [[ "$EUID" == "0" ]] && command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+    bash deploy/install-runner-watchdog.sh
+fi

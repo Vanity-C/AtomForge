@@ -48,6 +48,10 @@ export function activeTeam(config:AgentConfiguration):AgentTeam {
 }
 
 export const memberTarget=(id:string)=>`member:${id}`;
+export function engineerTeam(team:AgentTeam, fallback:AgentProfile=FALLBACK_TEAM.engineer):AgentTeam {
+  const person=teamRoster(team).find(member=>member.profile.role==='engineer')?.profile||fallback;
+  return {engineer:person,[memberTarget(person.id)]:person};
+}
 export const displayAgent=(agent:AgentProfile,id:string=agent.role)=>({id,role:agent.role,alias:agent.name,name:agent.title,nickname:'',task:agent.responsibilities,greeting:agent.greeting,equipment:agent.personality,profile:agent});
 
 /** Never present a selected member twice when they cover several execution stages. */

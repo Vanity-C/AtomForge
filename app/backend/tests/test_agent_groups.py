@@ -250,7 +250,7 @@ def test_team_switch_and_profile_changes_do_not_rewrite_run_or_member_history(cl
 
 def test_same_role_colleague_has_own_chat_identity(client, monkeypatch):
     owner, _ = account(client)
-    pid = project(client, owner)
+    pid = project(client, owner, mode='team')
     data = body(client.get(URL, headers=owner).json())
     data['agents'].append({**data['agents'][3], 'id': 'colleague', 'name': '另一位伙伴'})
     data['teams'].append(group('duo', ['default-engineer', 'colleague', 'default-leader']))

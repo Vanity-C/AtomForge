@@ -4,6 +4,10 @@
 
 公网 HTTPS → Caddy → FastAPI（同时提供前端静态资源）→ SQLite 持久化卷。FastAPI 通过内部网络调用 runner；runner 不暴露公网端口，不获取模型密钥，不挂载 Docker socket。
 
+runner 必须启用 Compose 的 `init: true`，独立运行时使用 `docker run --init`。Chromium 退出后产生的孤儿子进程需要由 init 回收，否则长期运行会耗尽 `pids_limit`，表现为验证未就绪、`Resource temporarily unavailable`，甚至无法执行容器健康检查。不能只提高进程上限或依赖任务超时重启。
+
+进程回收回归检查：在已构建的 runner 镜像中运行 `docker run --rm --init --network none --memory 768m --pids-limit 256 atomforge-runner:local node --test process-lifecycle.test.mjs`，连续启动和关闭 24 次真实浏览器并检查没有遗留僵尸进程。参见 [Playwright Docker 指引](https://playwright.dev/docs/docker)和 [Compose init 配置](https://docs.docker.com/reference/compose-file/services/#init)。
+
 适用 Linux x86_64、Docker Engine 与 Compose v2 或更新版。建议至少 2 核 CPU、4 GB 内存和 20 GB 可用磁盘；这是本项目容器资源预算，不是性能承诺。首次镜像构建还需空间下载 Node、Python 依赖和 Chromium。
 
 域名 A 记录须指向服务器，安全组和防火墙允许 TCP 80/443；SSH 端口按自身管理策略开放。已有站点占用 80/443 时，先整合现有反向代理，不能直接覆盖配置或停止旧站。

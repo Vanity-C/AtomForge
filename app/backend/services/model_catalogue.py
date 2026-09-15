@@ -7,7 +7,7 @@ from services import codex_provider
 
 DEEPSEEK = [
     {'id': 'deepseek-flash', 'label': 'DeepSeek V4.1 Flash', 'provider': 'deepseek',
-     'traits': ['快速', '默认'], 'note': 'DeepSeek-V4.1-Flash · 使用已配置的 DeepSeek API Key'},
+     'traits': ['版本推荐', '性价比首选', '默认'], 'note': '当前版本优先推荐，适合日常应用生成和多轮修改 · 使用已配置的 DeepSeek API Key'},
     {'id': 'deepseek-v4-pro', 'label': 'DeepSeek V4 Pro · 0813', 'provider': 'deepseek',
      'traits': ['复杂需求'], 'note': 'DeepSeek-V4-Pro-0813 · 使用已配置的 DeepSeek API Key'},
 ]

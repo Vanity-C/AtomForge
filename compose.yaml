@@ -44,6 +44,8 @@ services:
         max-file: "3"
 
   runner:
+    # Chromium spawns subprocesses; PID 1 must reap them after each verification.
+    init: true
     build:
       context: .
       dockerfile: app/runner/Dockerfile

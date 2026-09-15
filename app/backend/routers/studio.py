@@ -91,9 +91,13 @@ async def run(run_id:str,user:Af_users=Depends(get_af_user)):
 
 @router.delete('/runs/{run_id}')
 async def cancel(run_id:str,user:Af_users=Depends(get_af_user)):
-    async with studio.start_lock:
-        await studio.cancel(user.id,run_id)
+    await studio.cancel(user.id,run_id)
     return {'success':True}
+
+
+@router.post('/projects/{project_id}/stop')
+async def stop_project(project_id:int,user:Af_users=Depends(get_af_user)):
+    return await studio.stop_project(user.id,project_id)
 
 
 class Decision(BaseModel):

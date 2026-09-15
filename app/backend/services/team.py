@@ -1,4 +1,5 @@
 """Role-specific model turns with durable handoffs and a separate QA gate."""
+import hashlib
 import json
 import uuid
 from typing import Literal
@@ -100,6 +101,18 @@ def handoff_preview(message):
 CONFIRMED_SCOPE = '\n以 request、approvedRequirements 和 approvedSolution 中已确认的方案为执行与验收依据。用户最新确认的修改优先于初始请求、旧历史、讨论建议和错误的验收反馈。不要用旧配色或已被替换的要求推翻已确认方案；不要自行扩大范围。'
 CONFIRMED_SCOPE += '\n文档中的 confirmed_choices 是用户实际选择，优先于同一文档中的默认方案和备选项；实现与验收必须体现这些选择。'
 
+ROLES['qa']=(ROLES['qa'][0],ROLES['qa'][1]+'\n本次 currentFiles 是唯一的源码依据。交接、聊天和旧审查中的代码都可能过期；拒绝通过前必须在 currentFiles 中确认该缺陷仍存在。已经被替换的语句、已经补齐的样式不能再次作为未解决问题。保留验收要求，但不要直接沿用历史结论。')
+
+
+def current_review_context(context):
+    """Review the actual candidate, without feeding back QA's old conclusion."""
+    result={**context,'handoffs':{role:document for role,document in context.get('handoffs',{}).items() if role!='qa'}}
+    result.pop('repairRequest',None)
+    source=[{'path':file['path'],'content':file['content']} for file in result.get('currentFiles',[])]
+    result['sourceRevision']=hashlib.sha256(json.dumps(sorted(source,key=lambda file:file['path']),
+                                                      ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+    return result
+
 
 def validate_review(raw):
     review = Review.model_validate(raw).model_dump()
@@ -128,10 +141,19 @@ async def execute_team(run_id, owner, project_id, payload):
         config['payments_enabled'] = bool(config['enabled'] and all(connection.get(k) for k in ['stripe_secret', 'stripe_webhook_secret', 'stripe_price_id', 'public_base_url']))
 
     draft_files = json.loads(saved.result).get('draft_files', payload['files'])
+    code_checkpoint = json.loads(saved.result).get('code_checkpoint', {})
     resume_verification = json.loads(saved.result).get('resume_stage') == 'verification' and bool(documents.get('engineer'))
 
     async def persist():
-        await studio.change(run_id, result={'team': documents, 'draft_files': draft_files})
+        await studio.change(run_id, result={'team': documents, 'draft_files': draft_files,
+                                           **({'code_checkpoint':code_checkpoint} if code_checkpoint else {})})
+
+    async def save_batch(files, checkpoint):
+        nonlocal draft_files
+        draft_files = files
+        code_checkpoint.clear()
+        code_checkpoint.update(checkpoint)
+        await persist()
 
     test_corrections = 0
 
@@ -151,7 +173,7 @@ async def execute_team(run_id, owner, project_id, payload):
         raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_test_diagnosis',
             [{'role': 'system', 'content': '你是测试工程师，诊断交互步骤失败。仅当源码和已确认需求证明应用行为正确、测试前置条件或操作错误时返回 test_defect，并提供保留原验收目标的完整替代测试。真实缺陷、依据不足或业务结果断言错误返回 application_defect，不调整预期掩盖缺陷。不得删除失败场景，合法禁用行为要改成 disabled 断言，保留有效输入的成功路径。禁止返回或修改 files/edits/delete。只返回 JSON {"verdict":"test_defect|application_defect","reason":"引用源码和需求的具体证据","tests":[]}。\n' + TEST_GUIDANCE},
              {'role': 'user', 'content': json.dumps({'requirements': documents['product'], 'solution': context.get('approvedSolution'), 'currentFiles': files, 'tests': tests, 'failure': checked}, ensure_ascii=False)}],
-            max_tokens=4200, temperature=.1)
+            temperature=.1)
         try:
             diagnosis = TestDiagnosis.model_validate(raw)
             if diagnosis.verdict != 'test_defect':
@@ -201,9 +223,10 @@ async def execute_team(run_id, owner, project_id, payload):
         message=output.get('handoff') or f"{members[recipient]['name']}，这部分交给你了。"+(output.get('summary') or output.get('goal') or '请结合交接文档继续。')
         await role_event(sender,handoff_preview(message),'done',kind='handoff',recipient=recipient,output=output)
 
-    async def turn(role, context, schema, max_tokens=2600):
+    async def turn(role, context, schema):
         from services.agent_chat import discussion_context
         context={**context,'userDiscussions':await discussion_context(owner,project_id)}
+        if role=='qa':context=current_review_context(context)
         if role!='leader':await workflow.move(run_id,role,'doing','负责人直接拉取工作包')
         starts={'product':'我先理清目标和验收标准，再直接交给设计伙伴。','design':f"{members['product']['name']}，需求已收到。我来补齐页面、状态和操作体验。",'architect':f"{members['design']['name']}，我来承接设计，明确组件、数据契约和实现步骤。",'qa':f"{members['engineer']['name']}，我来对照需求检查实现，再安排独立测试。"}
         await role_event(role, starts.get(role,'我接着处理这部分，先核对已有的交接内容。'), model=payload['model'],kind='plan')
@@ -211,7 +234,7 @@ async def execute_team(run_id, owner, project_id, payload):
             raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_'+role,
                 [{'role': 'system', 'content': (('平台实现约束：入口' + studio.ENGINEER.split('入口', 1)[1] + '\n\n' + ROLES[role][1]) if role in {'design','architect'} else ROLES[role][1])+('\n你正在编写或修订需求。request 是用户本轮最新要求，优先于 originalRequest、旧历史和旧交接文档；发生冲突必须采用最新要求。完整保留未受影响的功能，把最新修改写入 goal、tasks 和 acceptance，直接交接实施；仅遇到新的必要阻塞才提问。' if role=='product' else CONFIRMED_SCOPE)},
                  {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}],
-                max_tokens=max_tokens, temperature=payload.get('temperature', .35))
+                temperature=payload.get('temperature', .35))
             try:
                 output = schema(raw)
             except (ValidationError, ValueError) as validation_error:
@@ -219,7 +242,7 @@ async def execute_team(run_id, owner, project_id, payload):
                 raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_'+role,
                     [{'role':'system','content':ROLES[role][1] + CONFIRMED_SCOPE + '\n修正交接 JSON 的格式和字段，保持原有业务要求，不增加问题；只返回有效 JSON。'},
                      {'role':'user','content':json.dumps({'context':context,'previousOutput':raw,'validationError':str(validation_error)[:2500]},ensure_ascii=False)}],
-                    max_tokens=max_tokens, temperature=.1)
+                    temperature=.1)
                 output = schema(raw)
         except studio.Replan:
             raise
@@ -256,7 +279,7 @@ async def execute_team(run_id, owner, project_id, payload):
     # model calls. Specific consultations remain available through role chat.
     if 'leader' not in documents:
         await role_event('leader','收到需求。我先拆分任务、安排负责人和把关人，再带团队推进。',kind='activity',recipient='user')
-        await turn('leader',context,lambda r:LeadershipPlan.model_validate(r).model_dump(),3200)
+        await turn('leader',context,lambda r:LeadershipPlan.model_validate(r).model_dump())
     documents['leader']['stages']=LeadershipPlan.model_validate(documents['leader']).model_dump()['stages']
     await workflow.initialize(run_id,documents['leader'],members,documents)
     if 'product' not in documents:
@@ -296,11 +319,14 @@ async def execute_team(run_id, owner, project_id, payload):
                 patch = {'tests':documents['engineer'].get('tests',[])}
                 await role_event('engineer','实现和交接已保存，直接继续验收，无需重新生成。','done')
             else:
-                patch = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_code' if not attempt else 'team_repair',
+                from services.code_batches import generate_patch
+                patch = await generate_patch(owner, project_id, run_id, payload['model'], 'team_code' if not attempt else 'team_repair',
                     [{'role': 'system', 'content': studio.ENGINEER+CONFIRMED_SCOPE},
                      {'role': 'user', 'content': json.dumps({**context, 'currentFiles': files, 'previousError': failure}, ensure_ascii=False)}],
-                    temperature=payload.get('temperature', .35))
+                    files, temperature=payload.get('temperature', .35),checkpoint=code_checkpoint,save=save_batch,
+                    prefer_batches=bool(not attempt and '输出' in payload.get('previousError','')))
                 files = studio.merge_patch(files, patch)
+                code_checkpoint.clear()
                 draft_files = files
                 changed_paths=studio.patch_paths(patch)
                 await role_event('engineer','增量修改完成，等待构建验证',kind='tool_result',tool='workspace.apply_patch',output={'files':[{'path':f['path'],'bytes':len(f['content'].encode())} for f in files if f['path'] in changed_paths],'deleted':patch.get('delete',[])})
@@ -322,7 +348,7 @@ async def execute_team(run_id, owner, project_id, payload):
                 await workflow.move(run_id,'qa','doing','继续已保存的独立验证')
                 await workflow.move(run_id,'qa','review','复用独立审查报告')
             else:
-                review = await turn('qa', {**context, 'currentFiles': files, 'buildLogs': checked.get('logs', [])}, validate_review, 3000)
+                review = await turn('qa', {**context, 'currentFiles': files, 'buildLogs': checked.get('logs', [])}, validate_review)
             if not review['approved']:
                 raise ValueError('独立验收要求修复：' + '; '.join(review['issues'] or [review['summary']]))
             quality=await workflow.policy(run_id)

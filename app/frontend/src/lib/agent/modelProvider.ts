@@ -6,7 +6,7 @@ export interface ModelCatalogue {items: ModelOption[]; providers: {id: string; l
 export interface GenerationProfile { provider: string; model: string; temperaturePct: number; autoPreview: boolean; }
 export const DEFAULT_PROFILE: GenerationProfile = { provider: 'deepseek', model: 'deepseek-flash', temperaturePct: 35, autoPreview: true };
 export const MODEL_CATALOGUE: ModelOption[] = [
-  { id: 'deepseek-flash', label: 'DeepSeek V4.1 Flash', provider: 'deepseek', traits: ['快速', '默认'], note: '适合应用生成和多轮修改' },
+  { id: 'deepseek-flash', label: 'DeepSeek V4.1 Flash', provider: 'deepseek', traits: ['版本推荐', '性价比首选', '默认'], note: '当前版本优先推荐，适合日常应用生成和多轮修改' },
   { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro · 0813', provider: 'deepseek', traits: ['复杂需求'], note: '用于更复杂的应用设计与代码生成' },
 ];
 export function findModel(id: string): ModelOption { return MODEL_CATALOGUE.find(m => m.id === id) ?? {id, label: id, provider: id.startsWith('gpt-') ? 'codex' : 'deepseek', traits: [], note: ''}; }

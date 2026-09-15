@@ -195,16 +195,17 @@ export function parseSnapshot(snapshot: string): GeneratedFile[] {
   }
 }
 
-/** Roll back to a snapshot; the backend commits it as a new version. */
+/** Activate an existing snapshot without creating or deleting version history. */
 export async function rollbackToVersion(
   projectId: number,
   version: VersionRecord,
+  expectedVersion?: number,
 ): Promise<number> {
   const session = projectSession();
   const res = await invoke<{ version: number; project: ProjectRecord }>({
     url: `/api/v1/af/projects/${projectId}/rollback`,
     method: 'POST',
-    data: { version_id: version.id },
+    data: { version_id: version.id, expected_version: expectedVersion },
   });
   projectCollection.upsert(res.project, session);
   return res.version;

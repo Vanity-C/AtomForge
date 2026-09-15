@@ -47,6 +47,7 @@ import PreviewFrame from '@/components/PreviewFrame';
 import { errorMessage, invoke } from '@/lib/sdk';
 import VisualEditor from '@/components/VisualEditor';
 import StudioPanel from '@/components/StudioPanel';
+import StopProjectTasks from '@/components/StopProjectTasks';
 import RunNotice from '@/components/RunNotice';
 import AgentConversation from '@/components/AgentConversation';
 import ProjectTools from '@/components/ProjectTools';
@@ -121,9 +122,11 @@ function ProjectWorkspace() {
   const [run, setRun] = useState<StudioRun | null>(null);
   const [runId, setRunId] = useState('');
   const [runRefresh,setRunRefresh] = useState(0);
-  const [chatRole,setChatRole] = useState('leader');
+  const [stopRevision,setStopRevision] = useState(0);
+  const [chatRole,setChatRole] = useState('all');
   const [race, setRace] = useState(false);
   const agentMode: AgentMode = project?.agent_mode || 'build';
+  useEffect(()=>{setChatRole(agentMode==='team'?'leader':'all');},[projectId,agentMode]);
   const [artifact, setArtifact] = useState<Artifact>();
   const [selection,setSelection] = useState<{source:string;text:string|null;tag:string}|null>(null);
   const [cloudSlug, setCloudSlug] = useState<string | null>(null);
@@ -328,32 +331,35 @@ function ProjectWorkspace() {
   const handleRollback = async (version: VersionRecord) => {
     setRollingBack(version.version);
     try {
-      const newVersion = await rollbackToVersion(projectId, version);
+      const restoredVersion = await rollbackToVersion(projectId, version, project?.current_version);
       const snapshot = parseSnapshot(version.files_snapshot);
       setFiles(snapshot);
       setDraft(null);
-      const entry = snapshot.find((f) => f.path === 'App.jsx') ?? snapshot[0];
-      if (entry) setActivePath(entry.path);
+      setFileSource(run ? {runId: run.id, source: 'saved'} : null);
+      setArtifact(undefined);
+      setSelection(null);
       const [freshProject, freshVersions] = await Promise.all([
         getProject(projectId),
         listVersions(projectId),
       ]);
       setProject(freshProject);
       setVersions(freshVersions);
+      const entry = snapshot.find((f) => f.path === freshProject.entry_file) ?? snapshot[0];
+      if (entry) setActivePath(entry.path);
       await addMessage({
         projectId,
         role: 'assistant',
-        content: `已回滚到 v${version.version}，并保存为 v${newVersion}。`,
+        content: `已回滚到 v${restoredVersion}，历史版本保持不变。`,
         phase: 'done',
-        version: newVersion,
+        version: restoredVersion,
       });
       setBubbles((prev) => [
         ...prev,
         {
           key: `rb-${Date.now()}`,
           role: 'assistant',
-          content: `已回滚到 v${version.version}，并保存为 v${newVersion}。`,
-          version: newVersion,
+          content: `已回滚到 v${restoredVersion}，历史版本保持不变。`,
+          version: restoredVersion,
         },
       ]);
       setHistoryOpen(false);
@@ -509,7 +515,7 @@ function ProjectWorkspace() {
           <>
             <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
               <SheetTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs">
+                <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs" aria-label="版本历史">
                   <History className="h-3.5 w-3.5" />
                   <span className="hidden sm:inline">版本</span>
                 </Button>
@@ -518,7 +524,7 @@ function ProjectWorkspace() {
                 <SheetHeader>
                   <SheetTitle>版本历史</SheetTitle>
                   <SheetDescription>
-                    每次生成、手动保存和回滚都会留下完整快照，可随时回到任意版本。
+                    生成和手动保存会创建新版本。回滚仅切换当前版本，保留全部历史；再次保存时版本号继续递增。
                   </SheetDescription>
                 </SheetHeader>
                 <div className="mt-5 space-y-3 overflow-y-auto pb-6" style={{ maxHeight: 'calc(100vh - 160px)' }}>
@@ -566,7 +572,7 @@ function ProjectWorkspace() {
                               size="sm"
                               variant="outline"
                               className="h-7 gap-1.5 px-2 text-xs"
-                              disabled={!canEdit || generating || isCurrent || rollingBack !== null}
+                              disabled={!canEdit || generating || savingFile || isCurrent || rollingBack !== null}
                               onClick={() => handleRollback(version)}
                             >
                               {rollingBack === version.version ? (
@@ -587,7 +593,7 @@ function ProjectWorkspace() {
 
             <Sheet open={shareOpen} onOpenChange={setShareOpen}>
               <SheetTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs">
+                <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs" aria-label="分享">
                   <Share2 className="h-3.5 w-3.5" />
                   <span className="hidden sm:inline">分享</span>
                 </Button>
@@ -621,6 +627,10 @@ function ProjectWorkspace() {
                     />
                   </div>
 
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    分享链接展示当前版本；保存或回滚后内容同步更新。关闭分享后，链接将无法访问。
+                  </p>
+
                   {project?.is_public && shareUrl ? (
                     <div className="space-y-2">
                       <Label className="text-xs text-muted-foreground">分享链接</Label>
@@ -644,16 +654,6 @@ function ProjectWorkspace() {
                     </div>
                   ) : null}
 
-                  <div className="rounded-lg border border-border bg-muted/40 p-4">
-                    <p className="text-sm font-medium">导出源码</p>
-                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                      把当前版本的全部文件打包为 zip 下载，附带本地运行说明。
-                    </p>
-                    <Button variant="outline" className="mt-3 w-full gap-1.5" onClick={handleExport}>
-                      <Download className="h-3.5 w-3.5" />
-                      下载 zip
-                    </Button>
-                  </div>
                 </div>
               </SheetContent>
             </Sheet>
@@ -663,11 +663,14 @@ function ProjectWorkspace() {
               size="sm"
               className="h-8 gap-1.5 px-2 text-xs"
               onClick={handleExport}
+              disabled={!files.length || rollingBack !== null}
+              title="下载当前版本源码 ZIP"
+              aria-label="导出源码"
             >
               <Download className="h-3.5 w-3.5" />
               <span className="hidden md:inline">导出</span>
             </Button>
-            <ProjectTools projectId={projectId} role={project?.role} disabled={generating} onChanged={()=>{void reloadArtifact();}}/>
+            <ProjectTools projectId={projectId} role={project?.role} disabled={generating || savingFile || rollingBack !== null} onChanged={()=>{void reloadArtifact();}}/>
           </>
         }
       />
@@ -688,14 +691,20 @@ function ProjectWorkspace() {
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {agentMode==='team'?'智能体团队':'智能体'}
               </span>
-              <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+              <span className="ml-auto min-w-0 truncate font-mono text-[11px] text-muted-foreground">
                 {profile.model}
               </span>
+              <StopProjectTasks projectId={projectId} disabled={!canEdit} onStopped={result=>{
+                setStopRevision(n=>n+1);setRunRefresh(n=>n+1);
+                if(runId&&result.stopped_run_ids.includes(runId)){
+                  setGenerating(false);setRun(previous=>previous?{...previous,status:'cancelled',stage:'cancelled',error:'任务已停止；草稿与交接进度已保留。'}:previous);
+                }
+              }}/>
             </div>
 
             <RunNotice run={run} onOpenBoard={()=>{setRightTab('board');if(run?.status==='awaiting_input')setChatRole('all');}}/>
             {runConnectionWaiting&&<p role="status" className="shrink-0 border-b px-3 py-2 text-xs text-muted-foreground">进度连接暂时中断，正在自动恢复；请勿重复提交需求。</p>}
-            <AgentConversation filePaths={displayFiles.map(file=>file.path)} onOpenFile={path=>{if(path!==activeFile?.path&&dirty){toast.info("请先保存或放弃当前文件的修改，再查看其他文件");setRightTab("code");return;}if(path!==activeFile?.path)setDraft(null);setActivePath(path);setRightTab("code");}} projectId={projectId} run={run} role={chatRole} onRole={setChatRole} team={agentMode==='team'} model={profile.model} canEdit={canEdit} legacy={bubbles} onScheduled={id=>{setRunId(id);setRunRefresh(n=>n+1);}} onUpdated={()=>setRunRefresh(n=>n+1)} onImplement={text=>{setChatRole('all');setInput(text);}}/>
+            <AgentConversation stopRevision={stopRevision} filePaths={displayFiles.map(file=>file.path)} onOpenFile={path=>{if(path!==activeFile?.path&&dirty){toast.info("请先保存或放弃当前文件的修改，再查看其他文件");setRightTab("code");return;}if(path!==activeFile?.path)setDraft(null);setActivePath(path);setRightTab("code");}} projectId={projectId} run={run} role={chatRole} onRole={setChatRole} team={agentMode==='team'} model={profile.model} canEdit={canEdit} legacy={bubbles} onScheduled={id=>{setRunId(id);setRunRefresh(n=>n+1);}} onUpdated={()=>setRunRefresh(n=>n+1)} onImplement={text=>{setChatRole('all');setInput(text);}}/>
 
             <div className={`shrink-0 border-t border-border p-3 ${chatRole!=='all'?'hidden':''}`}>
               {previewError && !generating ? <div className="mb-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-xs">
