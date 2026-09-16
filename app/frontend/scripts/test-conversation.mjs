@@ -5,8 +5,25 @@ import ts from 'typescript';
 
 const source = await readFile(new URL('../src/lib/conversation.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, {compilerOptions: {target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022}}).outputText;
-const {groupConversation,currentOutputFiles} = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'));
+const {groupConversation,currentOutputFiles,diagnosticText} = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'));
 const message = (id, kind, extra = {}) => ({id, kind, run_id: 'run-1', sender: 'engineer', recipient: 'all', content: kind, detail: {}, created: '2026-09-12T00:00:00Z', ...extra});
+
+test('structured QA diagnostics retain every field as safe display text', () => {
+  const diagnostic = {error:'测试计划需要补充',tests_count:0,scenarios:[{name:'保存',steps:0}],total_scenario_steps:0,contract:{min_total_steps:2,max_total_steps:1000}};
+  const before=JSON.stringify(diagnostic);
+  const text=diagnosticText(diagnostic);
+  assert.equal(typeof text,'string');
+  assert.deepEqual(JSON.parse(text),diagnostic);
+  assert.match(text,/\n  "error":/);
+  assert.equal(JSON.stringify(diagnostic),before);
+});
+test('diagnostic display handles legacy strings, arrays, scalar values and missing details', () => {
+  assert.equal(diagnosticText('原始错误\n第二行'),'原始错误\n第二行');
+  for(const value of [null,undefined,'']) assert.equal(diagnosticText(value),'');
+  for(const value of [[],['错误',{steps:2}],{},0,false]) assert.deepEqual(JSON.parse(diagnosticText(value)),value);
+  const cyclic={};cyclic.self=cyclic;
+  assert.match(diagnosticText(cyclic),/无法解析/);
+});
 
 test('tool file links support both output formats, deduplicate, and exclude unavailable files', () => {
   assert.deepEqual(currentOutputFiles({files:['App.jsx',{path:'index.css',bytes:30},'App.jsx','deleted.js','https://external.test',{path:1},null]},['App.jsx','index.css']),['App.jsx','index.css']);

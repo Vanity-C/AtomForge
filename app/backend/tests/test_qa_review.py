@@ -36,11 +36,58 @@ def test_review_scenarios_validate_all_steps_and_support_legacy_reports():
     assert validate_review(review(False, many_issues))['issues'] == many_issues
 
 
+def test_structured_issues_preserve_metadata_and_legacy_is_explicitly_unknown():
+    issue = {'description': 'Save loses records', 'type': 'data', 'severity': 'high',
+             'location': 'App.jsx', 'reproduction': 'Save and reload', 'expected': 'Record remains',
+             'actual': 'Record disappears', 'evidence': 'State is not persisted'}
+    parsed = validate_review(review(False, [issue, ' Save  loses records ', 'Old unclassified report']))
+    assert parsed['issues'] == ['Save loses records', 'Old unclassified report']
+    assert parsed['issueDetails'][0]['severity'] == 'high'
+    assert parsed['issueDetails'][0]['evidence'] == issue['evidence']
+    assert parsed['issueDetails'][1]['type'] == parsed['issueDetails'][1]['severity'] == 'unknown'
+    assert validate_review(parsed) == parsed
+    for invalid in ({**issue, 'severity': 'made-up'}, {**issue, 'description': '   '}):
+        with pytest.raises(ValueError):
+            validate_review(review(False, [invalid]))
+
+
+def test_issue_metadata_survives_verification_and_repair_handoff(client, monkeypatch):
+    owner, _ = account(client)
+    pid = project(client, owner, mode='team')
+    base = fake_model([])
+    repaired = False
+    feedback = []
+    issue = {'description': 'Missing persistent storage', 'type': 'data', 'severity': 'high',
+             'location': 'App.jsx', 'evidence': 'Only in-memory state'}
+
+    async def model(*args, **kwargs):
+        nonlocal repaired
+        if args[4] == 'team_repair':
+            feedback.append(json.loads(args[5][-1]['content'])['repairRequest'])
+            repaired = True
+        if args[4] == 'team_qa':
+            return review(repaired, [] if repaired else [issue])
+        return await base(*args, **kwargs)
+
+    async def build(files, tests=None):
+        return {'ok': True, 'artifact': {'js': 'verified', 'css': ''}}
+
+    monkeypatch.setattr(studio, 'model_call', model)
+    monkeypatch.setattr(studio, 'runner_build', build)
+    run = launch(client, owner, pid)
+    assert run['status'] == 'done', run
+    assert feedback[0]['issueDetails'][0]['severity'] == 'high'
+    assert feedback[0]['items'] == [issue['description']]
+    handoff = next(e for e in run['events'] if e.get('role') == 'qa' and e.get('recipient') == 'engineer' and e.get('kind') == 'handoff')
+    assert handoff['output']['issueDetails'][0]['type'] == 'data'
+    assert run['result']['team']['qa']['verification']['issueDetails'] == []
+
+
 @pytest.mark.parametrize('invalid', [
     {'scenarios': [{'name': 'same', 'tests': steps('one')}, {'name': ' SAME ', 'tests': steps('two')}]},
     {'scenarios': [{'name': 'empty', 'tests': []}]},
     {'scenarios': [{'name': 'bad action', 'tests': [{'action': 'execute'}, {'action': 'visible', 'selector': 'h1'}]}]},
-    {'scenarios': [{'name': str(i), 'tests': steps('counter') * 5} for i in range(6)]},
+    {'scenarios': [{'name': str(i), 'tests': steps('counter') * 84} for i in range(6)]},
     {'tests': steps('a silently omitted scenario')},
     {'approved': True, 'issues': ['still broken']},
 ])
@@ -165,9 +212,11 @@ def test_qa_protocol_error_is_corrected_by_qa_not_engineering(client, monkeypatc
     monkeypatch.setattr(studio, 'model_call', model)
     monkeypatch.setattr(studio, 'runner_build', build)
     run = launch(client, owner, pid)
-    assert run['status'] == 'error' and len(reviews) == 2
+    from services.qa_protocol import MAX_CORRECTIONS
+    assert run['status'] == 'error' and len(reviews) == MAX_CORRECTIONS + 1
     assert not any(stage == 'team_repair' for stage, _ in calls)
-    assert run['result']['draft_files'] and '验收报告格式' in run['error']
+    assert run['result']['draft_files'] and '验收测试计划' in run['error']
+    assert run['result']['error_code'] == 'qa_protocol_error'
 
 
 def test_correcting_one_scenario_preserves_and_runs_its_siblings(client, monkeypatch):

@@ -4,15 +4,13 @@ import {CircleAlert,Loader2,PauseCircle,RotateCcw} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {invoke,errorMessage} from '@/lib/sdk';
 import {type AgentMode,type StudioRun} from '@/lib/studio';
-import {useAgentTeam} from './AgentProvider';
 import TeamBoard from './TeamBoard';
-import AgentIntroduction from './AgentIntroduction';
+import RunLog from './RunLog';
 import PreviewFrame from './PreviewFrame';
 import {toast} from 'sonner';
 import {runExperience} from '@/lib/runExperience';
 
 export default function StudioPanel({run,onRun,onSaved,cloudSlug,agentMode='build'}:{run:StudioRun|null;onRun:(id:string)=>void;onSaved:()=>void;cloudSlug?:string|null;agentMode?:AgentMode}) {
-  const agents=useAgentTeam(run?.agents);
   const [candidate,setCandidate]=useState(0);
   const [busy,setBusy]=useState(false);
   const actionLock=useRef(false);
@@ -31,8 +29,6 @@ export default function StudioPanel({run,onRun,onSaved,cloudSlug,agentMode='buil
   const selected=run.result.candidates?.[candidate];
   const experience=runExperience(run);
   const recoverable=['error','interrupted','cancelled'].includes(run.status);
-  const stages:Record<string,string>={plan:'规划',code:'编码',build:'构建',test:'测试',repair:'修复',save:'保存',error:'检查未通过',review:'待选择'};
-  const planEvent=run.events.find(e=>e.stage==='plan'&&e.message.startsWith('{'));
   return <div className="mx-auto w-full max-w-5xl space-y-5 p-4 text-sm sm:p-6">
     <section className={recoverable?'sticky top-2 z-10 rounded-2xl border bg-background p-4 shadow-sm sm:p-5':''} aria-label="任务状态与操作">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -53,14 +49,7 @@ export default function StudioPanel({run,onRun,onSaved,cloudSlug,agentMode='buil
     </section>
     <TeamBoard run={run} mode={run.mode==='team'?'team':'build'}/>
     {experience.active&&<p className="mt-2" aria-live="polite">{experience.title} · {experience.description}</p>}
-    <details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer font-medium">执行日志（{run.events.length}）</summary>
-      <div className="mt-4 space-y-3 text-xs">
-      {run.events.filter(e=>e!==planEvent).map((e,i)=>{
-        const person=agents[e.role||''];
-        return <div key={i} className="flex gap-3 border-l-2 border-border pl-3">{person?<AgentIntroduction person={person} followParent><span className="w-20 shrink-0 text-muted-foreground">{person.title}</span></AgentIntroduction>:<span className="w-20 shrink-0 text-muted-foreground">{stages[e.stage]||e.stage}</span>}<span className="min-w-0 whitespace-pre-wrap break-words">{e.message}</span></div>;
-      })}
-      </div>
-    </details>
+    <RunLog key={run.id} run={run}/>
     {run.result.summary&&<details className="rounded-xl border bg-background p-4"><summary className="cursor-pointer font-medium">交付摘要{run.result.version ? ` · v${run.result.version}` : ''}</summary><p className="mt-3 whitespace-pre-wrap text-sm text-muted-foreground">{run.result.summary}</p></details>}
     {run.error&&!recoverable&&<details className="rounded-xl border bg-background p-4 text-xs"><summary className="cursor-pointer text-muted-foreground">查看诊断详情</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words">{run.error}</pre></details>}
     {run.status==='review'&&<div className="mt-3 space-y-2">

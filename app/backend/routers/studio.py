@@ -89,6 +89,19 @@ async def run(run_id:str,user:Af_users=Depends(get_af_user)):
     return await studio.get_run(user.id,run_id)
 
 
+@router.get('/runs/{run_id}/events')
+async def run_events(run_id:str,before:int|None=Query(default=None,ge=1),
+                     limit:int=Query(default=100,ge=1,le=200),user:Af_users=Depends(get_af_user)):
+    from services.run_logs import read_events
+    return await read_events(user.id,run_id,before,limit)
+
+
+@router.get('/runs/{run_id}/qa-reports')
+async def qa_reports(run_id:str,user:Af_users=Depends(get_af_user)):
+    from services.run_logs import read_issue_history
+    return await read_issue_history(user.id,run_id)
+
+
 @router.delete('/runs/{run_id}')
 async def cancel(run_id:str,user:Af_users=Depends(get_af_user)):
     await studio.cancel(user.id,run_id)

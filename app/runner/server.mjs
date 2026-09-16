@@ -5,6 +5,8 @@ import {mkdtemp, mkdir, writeFile, readFile, rm} from 'node:fs/promises';
 import Babel from '@babel/standalone';
 import {build} from 'esbuild';
 import {jobWatchdog} from './job-watchdog.mjs';
+import {MAX_TEST_STEPS, validateMaxSteps, testTimeoutMs, jobTimeoutMs} from './test-limits.mjs';
+export {MAX_TEST_STEPS} from './test-limits.mjs';
 import {processHealth} from './process-health.mjs';
 import {chromium} from 'playwright';
 import {fileURLToPath} from 'node:url';
@@ -118,13 +120,14 @@ export async function compile(files) {
   } finally {await rm(dir,{recursive:true,force:true});}
 }
 
-export const MAX_TEST_STEPS = 48;
 const PAGE_ACTIONS = ['reload','clear_storage'];
-const ASSERTIONS = ['text','visible','hidden','enabled','disabled'];
+const ASSERTIONS = ['text','visible','hidden','enabled','disabled','attached','detached'];
+const SVG_DEFINITIONS = new Set(['animate','animatetransform','animatemotion','set','defs','metadata','desc','title','lineargradient','radialgradient','stop','clippath','mask','pattern']);
 export class RunnerEnvironmentError extends Error {}
-export async function check(artifact, steps=[], {capture=false}={}) {
+export function validateTestSteps(steps, maximum=MAX_TEST_STEPS) {
+  validateMaxSteps(maximum);
   if (!Array.isArray(steps)) throw Error('测试协议错误：tests 必须是步骤数组');
-  if (steps.length > MAX_TEST_STEPS) throw Error(`测试协议错误：提交了 ${steps.length} 步，单次最多支持 ${MAX_TEST_STEPS} 步。请精简重复测试，保留核心流程；此错误不代表应用代码有问题。`);
+  if (steps.length > maximum) throw Error(`测试协议错误：提交了 ${steps.length} 步，单次最多支持 ${maximum} 步。请调整测试步骤上限或精简重复测试，保留核心流程；此错误不代表应用代码有问题。`);
   for (const [index, step] of steps.entries()) {
     if (!step || !['click','fill',...ASSERTIONS,...PAGE_ACTIONS].includes(step.action) ||
         (!PAGE_ACTIONS.includes(step.action) && (typeof step.selector !== 'string' || !step.selector.trim() || step.selector.length > 300)) ||
@@ -132,13 +135,21 @@ export async function check(artifact, steps=[], {capture=false}={}) {
       throw Error(`测试协议错误：第 ${index+1} 步需要有效的 action、CSS selector（最多 300 字符），fill/text 还需要字符串 value；请修正测试步骤。`);
     }
   }
+}
+export async function check(artifact, steps=[], {capture=false,maxTestSteps=MAX_TEST_STEPS,signal}={}) {
+  validateTestSteps(steps,maxTestSteps);
+  signal?.throwIfAborted();
   let browser;
   try { browser=await chromium.launch({headless:true,args:['--disable-dev-shm-usage','--no-sandbox','--js-flags=--max-old-space-size=128']}); }
   catch(error) { throw new RunnerEnvironmentError('验证浏览器无法启动：'+String(error.message).slice(0,1500)); }
   let timedOut = false;
-  const deadline=setTimeout(()=>{timedOut=true;void browser.close();},60000);
+  const budget=testTimeoutMs(steps.length);
+  const closeBrowser=()=>{void browser.close().catch(()=>{});};
+  const deadline=setTimeout(()=>{timedOut=true;closeBrowser();},budget);
+  signal?.addEventListener('abort',closeBrowser,{once:true});
   const logs=[]; const errors=[]; let failure;
   try {
+    signal?.throwIfAborted();
     const context=await browser.newContext({viewport:{width:1280,height:800},serviceWorkers:'block'});
     // Generated code gets a clean browser context: no secrets, workspace login,
     // host volumes, external requests or access to the backend network.
@@ -189,11 +200,18 @@ export async function check(artifact, steps=[], {capture=false}={}) {
     for (const [index, step] of steps.entries()) {
       const target=PAGE_ACTIONS.includes(step.action)?null:page.locator(step.selector).first();
       try {
+      if(['visible','hidden'].includes(step.action) && await target.count()) {
+        const node=await target.evaluate(el=>({svg:el.namespaceURI==='http://www.w3.org/2000/svg',tag:el.localName.toLowerCase()}));
+        if(node.svg&&SVG_DEFINITIONS.has(node.tag)) {
+          throw Error(`测试协议错误：第 ${index+1} 步对 SVG 定义节点 ${node.tag} 使用 ${step.action}，该节点不直接渲染。检查节点及属性是否存在请使用 attached/detached；检查图形显示请对宿主图形使用 visible。`);
+        }
+      }
       if(step.action==='click') await target.click();
       else if(step.action==='fill') await target.fill(String(step.value||''));
       else if(step.action==='text') {await page.waitForFunction(({selector,value})=>document.querySelector(selector)?.textContent?.includes(value),{selector:step.selector,value:String(step.value)},{timeout:2500});}
       else if(step.action==='visible') await target.waitFor({state:'visible'});
       else if(step.action==='hidden') await target.waitFor({state:'hidden'});
+      else if(step.action==='attached'||step.action==='detached') await target.waitFor({state:step.action});
       else if(step.action==='enabled'||step.action==='disabled') {
         await page.waitForFunction(({selector,disabled})=>{
           const el=document.querySelector(selector);
@@ -209,7 +227,9 @@ export async function check(artifact, steps=[], {capture=false}={}) {
       } catch (error) {
         const actual = target?await target.textContent({timeout:300}).catch(()=>null):null;
         const disabled = target?await target.isDisabled({timeout:300}).catch(()=>null):null;
-        failure={kind:['click','fill'].includes(step.action)?'interaction':'assertion',step:index+1,action:step.action,selector:step.selector,actual,disabled};
+        const protocol=String(error.message).startsWith('测试协议错误');
+        failure={kind:protocol?'protocol':['click','fill'].includes(step.action)?'interaction':'assertion',step:index+1,action:step.action,selector:step.selector,actual,disabled};
+        if(protocol){logs.push('FAIL '+error.message);throw error;}
         const detail = '第 '+(index+1)+' 步 '+step.action+' '+(step.selector||'')+
           (step.action==='text'?'，期望包含 '+JSON.stringify(String(step.value)):'')+
           '，实际文本 '+JSON.stringify(actual === null ? '元素不存在' : actual.slice(0,300))+
@@ -224,20 +244,26 @@ export async function check(artifact, steps=[], {capture=false}={}) {
     logs.push('PASS 页面挂载与运行错误检查；云端接口使用测试替身');
     const audit=await page.evaluate(()=>({title:document.title,h1:[...document.querySelectorAll('h1')].map(x=>x.textContent?.slice(0,200)),images:document.images.length,missingAlt:[...document.images].filter(x=>!x.hasAttribute('alt')).length,emptyLinks:[...document.querySelectorAll('a')].filter(x=>!x.textContent?.trim()&&!x.getAttribute('aria-label')).length,description:document.querySelector('meta[name="description"]')?.getAttribute('content')||''}));
     return {ok:true,logs,audit,...(thumbnail?{thumbnail}: {})};
-  } catch(e) {return {ok:false,logs,...(failure?{failure}:{}),error:timedOut?'交互测试超过 60 秒，请检查等待中的操作或精简重复测试。':String(e.message).slice(0,5000)};}
-  finally {clearTimeout(deadline);await browser.close();}
+  } catch(e) {return {ok:false,logs,...(failure?{failure}:{}),error:signal?.aborted?'测试请求已取消':timedOut?`交互测试超过 ${budget/1000} 秒（${steps.length} 步），请检查等待中的操作。`:String(e.message).slice(0,5000)};}
+  finally {clearTimeout(deadline);signal?.removeEventListener('abort',closeBrowser);await browser.close();}
 }
 
 let active=false;
 let activeSince=0;
+let activeBudgetMs=90000;
 let cancelWatchdog=()=>{};
+function setJobBudget(stepCount) {
+  cancelWatchdog();
+  activeBudgetMs=jobTimeoutMs(stepCount);
+  cancelWatchdog=jobWatchdog(()=>{
+    console.error(`Runner job exceeded ${activeBudgetMs/1000} seconds; restarting to release stuck browser resources`);
+    process.exit(1);
+  },Math.max(1,activeBudgetMs-(Date.now()-activeSince)));
+}
 function beginJob() {
   active=true;
   activeSince=Date.now();
-  cancelWatchdog=jobWatchdog(()=>{
-    console.error('Runner job exceeded 90 seconds; restarting to release stuck browser resources');
-    process.exit(1);
-  });
+  setJobBudget(0);
 }
 function endJob() {cancelWatchdog();active=false;activeSince=0;}
 let readyAt=0;
@@ -247,7 +273,7 @@ export async function ready() {
   // A health probe must not start a second Chromium beside a build/cover job.
   // A running job can keep using the last successful browser readiness proof.
   if(active) {
-    if(Date.now()-activeSince>75000)throw new RunnerEnvironmentError('验证任务超时，正在恢复验证服务');
+    if(Date.now()-activeSince>activeBudgetMs)throw new RunnerEnvironmentError('验证任务超时，正在恢复验证服务');
     if(readyAt)return {status:'ready',busy:true};
     if(readiness)return readiness;
     throw new RunnerEnvironmentError('验证服务正在准备');
@@ -263,8 +289,8 @@ export async function ready() {
   })().finally(()=>{readiness=undefined;endJob();});
   return readiness;
 }
-const server=http.createServer(async(req,res)=>{
-  const reply=(code,data)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(data));};
+export const server=http.createServer(async(req,res)=>{
+  const reply=(code,data)=>{if(res.destroyed||res.writableEnded)return;res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(data));};
   if(req.url==='/health') {
     const processes=processHealth();
     return reply(200,{status:processes.pressure?'degraded':'healthy',processes,busy:active,active_for_ms:active?Date.now()-activeSince:0,packages:PACKAGES});
@@ -277,21 +303,29 @@ const server=http.createServer(async(req,res)=>{
   if(active) return reply(429,{error:'构建服务忙，请稍后重试'});
   if(processHealth().pressure)return reply(503,{code:'runner_unavailable',error:'验证进程资源正在恢复'});
   beginJob();
+  const controller=new AbortController();
+  const disconnect=()=>{if(!res.writableEnded)controller.abort();};
+  res.once('close',disconnect);
   let raw='';
   try {
-    for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>(req.url==='/thumbnail'?10000000:2000000)) return reply(413,{error:'项目过大'});}
+    for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>10000000) return reply(413,{error:'项目过大'});}
     const input=JSON.parse(raw);
     if(req.url==='/thumbnail') {
       if(!input.artifact||typeof input.artifact.js!=='string'||typeof input.artifact.css!=='string')return reply(400,{error:'缺少已构建的应用'});
-      const result=await check(input.artifact,[],{capture:true});
+      const result=await check(input.artifact,[],{capture:true,signal:controller.signal});
       return reply(200,{ok:result.ok,thumbnail:result.ok?result.thumbnail:null,error:result.error});
     }
+    const steps=input.tests===undefined?[]:input.tests;
+    const maximum=input.max_test_steps===undefined?MAX_TEST_STEPS:validateMaxSteps(input.max_test_steps);
+    validateTestSteps(steps,maximum);
+    setJobBudget(input.check===false?0:steps.length);
     const files=input.edit?visualEdit(input.files,input.edit):input.files;
     const artifact=await compile(files);
-    const result=input.check===false ? {ok:true,logs:['构建通过；未执行浏览器检查']} : await check(artifact,input.tests||[],{capture:true});
+    controller.signal.throwIfAborted();
+    const result=input.check===false ? {ok:true,logs:['构建通过；未执行浏览器检查']} : await check(artifact,steps,{capture:true,maxTestSteps:maximum,signal:controller.signal});
     const {thumbnail,...verification}=result;
     reply(200,{...verification,artifact:result.ok?{...artifact,...(thumbnail?{thumbnail}:{})}:null,...(input.edit?{files}: {})});
   } catch(e){if(e instanceof RunnerEnvironmentError){readyAt=0;console.error(e.message);reply(503,{code:'runner_unavailable',error:'验证浏览器暂不可用'});}else reply(200,{ok:false,error:String(e.message).slice(0,5000),logs:[]});}
-  finally {endJob();}
+  finally {res.off('close',disconnect);endJob();}
 });
 if(process.argv[1]===fileURLToPath(import.meta.url)) server.listen(Number(process.env.PORT||8001),'0.0.0.0');

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test test.mjs"
+    "test": "node --test --test-concurrency=1 test.mjs test-limits.test.mjs long-plans.test.mjs job-watchdog.test.mjs"
   },
   "dependencies": {
     "@babel/standalone": "7.24.7",

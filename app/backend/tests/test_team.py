@@ -21,6 +21,17 @@ def fake_model(calls, reject=False, confirm=False, max_repairs=2):
     question={'kind':'user_requested','question':'用户要求先确认部署范围','options':[{'label':'自己使用','description':'当前用户使用'},{'label':'团队使用','description':'团队共享'}],'recommended':0,'reason':'用户明确要求先确认'}
     async def call(owner, project_id, run_id, model, stage, messages, **kwargs):
         context = json.loads(messages[-1]['content'])
+        if stage == 'team_test_diagnosis':
+            return {'verdict':'application_defect','reason':'The fixture deliberately fails the application assertion','tests':[]}
+        if stage == 'team_qa_triage':
+            # Existing workflow fixtures describe genuine defects. Dedicated
+            # triage tests cover optional, unknown and misclassified findings.
+            return {'items':[{**item,'disposition':'blocker','type':item['type'] if item['type'] not in {'test','unknown'} else 'functionality',
+                'severity':item['severity'] if item['severity']!='unknown' else 'high',
+                'requirement':'Fixture acceptance criterion','location':item.get('location') or 'App.jsx',
+                'reproduction':'Run the supplied fixture scenario','expected':'Fixture acceptance passes',
+                'actual':item['description'],'evidence':item.get('evidence') or 'Fixture deliberately leaves a required capability missing',
+                'impact':'The required fixture capability is unavailable','reason':'Confirmed fixture defect'} for item in context['findings']]}
         if stage == 'team_leader':
             if 'failure' in context:return {'summary':'Arrange repair','tasks':['Fix the reported issue']}
             return {'goal':'counter','policy':{'max_repairs':max_repairs},'summary':'Coordinate counter delivery','stages':[{'role':role,'title':role,'tasks':['Implement counter scope'],'delivery':'verified output','gatekeeper':'qa' if role in {'engineer','qa'} else 'leader'} for role in ['product','design','architect','engineer','qa']]}

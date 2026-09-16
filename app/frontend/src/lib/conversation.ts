@@ -3,7 +3,7 @@ export type ConversationDetail = {
   agent?:AgentProfile;
   call_id?: string; tool?: string; state?: string; duration_ms?: number;
   inputs?: unknown; output?: unknown; plan?: string[];
-  diagnostic?: string;
+  diagnostic?: unknown;
 };
 export type ConversationMessage = {
   team?:AgentTeam;
@@ -12,6 +12,17 @@ export type ConversationMessage = {
 };
 export type ConversationStep = {message: ConversationMessage; result?: ConversationMessage};
 export type ConversationReply = {id: number; sender: string; runId: string; messages: ConversationMessage[]; steps: ConversationStep[]; answer?: ConversationMessage};
+
+/** QA diagnostics may be structured JSON; never pass API objects to React as children. */
+export function diagnosticText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2) ?? '';
+  } catch {
+    return '诊断详情无法解析，请查看执行日志。';
+  }
+}
 
 /** Only link structured tool output to files that exist in the current project. */
 export function currentOutputFiles(output: unknown, available: readonly string[]): string[] {

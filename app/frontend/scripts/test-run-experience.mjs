@@ -6,6 +6,12 @@ const source=await readFile(new URL('../src/lib/runExperience.ts',import.meta.ur
 const compiled=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
 const {runExperience}=await import('data:text/javascript;base64,'+Buffer.from(compiled).toString('base64'));
 const run=(extra={})=>({status:'running',stage:'code',events:[{role:'engineer',state:'running'}],result:{},error:'',...extra});
+test('pending QA classification offers verification without engineering rework',()=>{
+  const result=runExperience(run({status:'error',result:{error_code:'qa_triage_pending',draft_files:[{path:'App.jsx'}]}}));
+  assert.equal(result.resumeVerification,true);
+  assert.match(result.title,/QA 核实/);
+  assert.match(result.description,/尚未交开发返工/);
+});
 test('recovery is distinct from failure and completion overrides old recovery events',()=>{
   assert.equal(runExperience(run()).title,'Neo 正在修改代码');
   const recovering=run({stage:'recovering',events:[{state:'recovering'}]});
@@ -30,4 +36,13 @@ test('verification outage offers resume instead of suggesting generation again',
   assert.match(runExperience(failed).description,/继续验收/);
   assert.doesNotMatch(runExperience(failed).description,/Docker/);
   assert.equal(runExperience(run({status:'error',error:'应用测试未通过'})).resumeVerification,false);
+});
+
+test('QA protocol failures, including historic reports, offer verification-only resume',()=>{
+  for(const extra of [{error_code:'qa_protocol_error'},{}]) {
+    const failed=run({status:'error',error:'独立验收报告格式仍无效，已保留草稿，请重试验收：测试需要 2–48 个步骤',result:{...extra,draft_files:[{path:'App.jsx',content:'saved'}]}});
+    assert.equal(runExperience(failed).resumeVerification,true);
+    assert.match(runExperience(failed).description,/继续验收/);
+    assert.doesNotMatch(runExperience(failed).description,/服务未能连接/);
+  }
 });

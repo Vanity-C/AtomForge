@@ -9,6 +9,8 @@
     "test:auth": "node scripts/check-auth.mjs",
     "test:versions": "node scripts/check-version-history.mjs",
     "test:qa-report": "node scripts/check-qa-report.mjs",
+    "test:run-logs": "node scripts/check-run-logs.mjs",
+    "test:test-limits": "node scripts/check-test-limits.mjs",
     "preview": "vite preview",
     "postinstall": "node scripts/prepare-preview.mjs",
     "predev": "node scripts/prepare-preview.mjs",

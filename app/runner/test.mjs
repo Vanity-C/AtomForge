@@ -40,9 +40,26 @@ test('long interaction suites preserve state and execute assertions beyond step 
   assert.match(failed.error,/第 14 步/);
 });
 test('test protocol rejects oversized or malformed suites without silently dropping steps',async()=>{
-  await assert.rejects(()=>check({},Array.from({length:MAX_TEST_STEPS+1},()=>({action:'visible',selector:'button'}))),/测试协议错误.*49.*48/);
+  await assert.rejects(()=>check({},Array.from({length:MAX_TEST_STEPS+1},()=>({action:'visible',selector:'button'}))),new RegExp(`测试协议错误.*${MAX_TEST_STEPS+1}.*${MAX_TEST_STEPS}`));
   for(const steps of [{},[null],[{action:'execute',selector:'button'}],[{action:'fill',selector:'input'}],[{action:'visible',selector:''}]]) {
     await assert.rejects(()=>check({},steps),/测试协议错误/);
+  }
+});
+
+test('SVG definition existence is distinct from rendered visibility',async()=>{
+  const artifact=await compile([{path:'App.jsx',content:`export default function App(){return <svg width="200" height="200"><g id="wheel"><circle cx="80" cy="80" r="30"/><animateTransform id="spin" attributeName="transform" type="rotate" from="0 80 80" to="360 80 80" dur="1s" repeatCount="indefinite"/></g></svg>}`}]);
+  for(const action of ['visible','hidden']) {
+    const result=await check(artifact,[{action,selector:'#spin'}]);
+    assert.equal(result.ok,false);
+    assert.equal(result.failure.kind,'protocol');
+    assert.match(result.error,/测试协议错误.*attached\/detached/);
+  }
+  const valid=await check(artifact,[{action:'visible',selector:'#wheel'},{action:'attached',selector:'#spin[dur="1s"]'},{action:'detached',selector:'#missing-animation'}]);
+  assert.equal(valid.ok,true,JSON.stringify(valid));
+  for(const step of [{action:'attached',selector:'#missing-animation'},{action:'detached',selector:'#spin'},{action:'attached',selector:'#spin[dur="99s"]'}]) {
+    const result=await check(artifact,[step]);
+    assert.equal(result.ok,false,'missing nodes and wrong attributes must fail');
+    assert.equal(result.failure.kind,'assertion');
   }
 });
 

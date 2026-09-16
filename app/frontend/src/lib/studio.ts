@@ -13,6 +13,13 @@ export const TEAM_ROLES = [
 ] as const;
 export const agentLabel = (id:string) => {const role=TEAM_ROLES.find(r=>r.id===id);return role?`${role.alias} · ${role.name}`:id;};
 export interface ReviewStep {action:string;selector?:string;value?:string}
+export interface QaIssue {
+  description:string;
+  type:'functionality'|'data'|'ui'|'performance'|'security'|'compatibility'|'build'|'test'|'other'|'unknown';
+  severity:'critical'|'high'|'medium'|'low'|'unknown';
+  location?:string;reproduction?:string;expected?:string;actual?:string;evidence?:string;source?:string;scenario?:string;
+  disposition?:'blocker'|'advisory'|'pending';requirement?:string;impact?:string;reason?:string;
+}
 export interface TeamOutput {
   summary?:string;goal?:string;tasks?:string[];acceptance?:string[];items?:string[];issues?:string[];approved?:boolean;verified?:boolean;
   stages?:{role:string;title:string;tasks:string[];delivery:string;gatekeeper:string}[];
@@ -20,8 +27,12 @@ export interface TeamOutput {
   tests?:ReviewStep[];
   scenarios?:{name:string;tests:ReviewStep[]}[];
   limitations?:string[];
+  issueDetails?:QaIssue[];
+  advisories?:QaIssue[];
   verification?:{
     sourceRevision:string;complete:boolean;issues:string[];
+    issueDetails?:QaIssue[];
+    pendingIssues?:QaIssue[];advisories?:QaIssue[];triageComplete?:boolean;
     selfTest?:{ok?:boolean;error?:string;logs?:string[]};
     scenarios:{name:string;status:'passed'|'failed'|'blocked';error?:string;reason?:string;logs?:string[]}[];
   };
@@ -34,10 +45,12 @@ export interface PendingConfirmation {
 export interface StudioRun {
   agents?:AgentTeam;
   id:string;project_id:number;mode?:'build'|'race'|'team';status:string;stage:string;error:string;server_time?:number;
-  events:{stage:string;message:string;at:string;role?:string;recipient?:string;state?:string;kind?:string;output?:TeamOutput}[];
+  events:RunEvent[];events_total?:number;
   result:{workflow?:DeliveryWorkflow|null;error_code?:string;resume_stage?:string;pending?:PendingConfirmation;version?:number;summary?:string;draft_files?:GeneratedFile[];team?:Record<string,TeamOutput>;candidates?:{model:string;summary:string;files:GeneratedFile[];artifact:Artifact}[]};
 }
-export interface StrategyPolicy {priority:string;wip:number;sla_minutes:number;max_repairs:number;min_tests:number}
+export interface RunEvent {id?:number;stage:string;message:string;at:string;role?:string;recipient?:string;state?:string;kind?:string;output?:TeamOutput}
+export interface RunEventPage {items:RunEvent[];total:number;has_more:boolean;next_before:number|null;notice?:string|null}
+export interface StrategyPolicy {priority:string;wip:number;sla_minutes:number;max_repairs:number;min_tests:number;max_test_steps?:number}
 export interface DeliveryWorkflow {
   version:string;revision:number;policy:StrategyPolicy;
   columns:{id:string;name:string;entry:string;exit:string;output:string;next:string[]}[];

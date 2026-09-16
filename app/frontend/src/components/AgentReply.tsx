@@ -6,14 +6,15 @@ import {Button} from '@/components/ui/button';
 import {useAgentTeam} from './AgentProvider';
 import {FALLBACK_TEAM} from '@/lib/agentProfiles';
 import type {ConversationMessage, ConversationReply, ConversationStep} from '@/lib/conversation';
-import {currentOutputFiles} from '@/lib/conversation';
+import {currentOutputFiles,diagnosticText} from '@/lib/conversation';
 
 const toolNames: Record<string, string> = {'model.generate': '调用模型', 'runner.build_and_test': '构建与浏览器测试', 'workspace.apply_patch': '修改项目文件'};
 const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
 
 function MessageBody({message}: {message: ConversationMessage}) {
-  const legacyIssue=!message.detail.diagnostic&&(message.kind==='error'||message.detail.state==='error'||message.content.startsWith('退回工程师修复：'));
-  const diagnostic=message.detail.diagnostic||(legacyIssue?message.content:undefined);
+  const detail=diagnosticText(message.detail.diagnostic);
+  const legacyIssue=!detail&&(message.kind==='error'||message.detail.state==='error'||message.content.startsWith('退回工程师修复：'));
+  const diagnostic=detail||(legacyIssue?message.content:undefined);
   const content=legacyIssue?'这一步曾遇到问题，详细原因已记录。当前进度请看上方任务状态。':message.content;
   return <>
     <div className="break-words leading-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:my-1 [&_h1]:my-3 [&_h1]:font-semibold [&_h2]:my-3 [&_h2]:font-semibold [&_h3]:my-2 [&_h3]:font-semibold [&_pre]:overflow-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_a]:text-primary"><Markdown options={{disableParsingRawHTML:true,overrides:{img:({alt}:{alt?:string})=><span>{alt}</span>}}}>{content}</Markdown></div>

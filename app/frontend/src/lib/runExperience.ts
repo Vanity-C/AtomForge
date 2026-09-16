@@ -2,7 +2,9 @@ import type {StudioRun} from './studio';
 
 export function runExperience(run: StudioRun) {
   const active=['queued','running'].includes(run.status);
-  const resumeVerification=!!run.result.draft_files?.length&&(run.result.error_code==='runner_unavailable'||/构建服务不可用|验证服务尚未就绪/.test(run.error));
+  const qaProtocol=run.result.error_code==='qa_protocol_error'||/独立验收报告格式|验收测试计划自动纠正|测试脚本需要纠正/.test(run.error);
+  const qaTriage=run.result.error_code==='qa_triage_pending';
+  const resumeVerification=!!run.result.draft_files?.length&&(qaTriage||qaProtocol||run.result.error_code==='runner_unavailable'||/构建服务不可用|验证服务尚未就绪/.test(run.error));
   const latest=run.events.at(-1);
   const recovering=active&&(latest?.state==='recovering'||run.stage==='repair'||run.stage==='recovering');
   const names:Record<string,string>={product:'Milo',design:'Luna',architect:'Ollie',engineer:'Neo',qa:'Pip'};
@@ -22,6 +24,8 @@ export function runExperience(run: StudioRun) {
     else if(/鉴权|密钥|not configured/i.test(run.error))description='模型连接需要检查，请更新生成设置后继续；已有成果会保留。';
     else if(/截断|输出.*完整/.test(run.error))description='这次修改未能完整生成，进度已保留；可继续任务或分步提出修改。';
     if(resumeVerification){title='代码已保留，验证暂未完成';description='验证服务未能连接，应用还没有通过验收。服务恢复后点击“继续验收”，会直接检查已有代码，无需重新生成或再次描述需求。';}
+    if(resumeVerification&&qaProtocol){title='代码已保留，测试计划待纠正';description='验收报告或测试脚本尚未通过校验。点击“继续验收”，测试工程师会基于已保存的草稿接着处理；未执行的检查不会计为通过。';}
+    if(resumeVerification&&qaTriage){title='检查记录待 QA 核实';description='问题的影响或测试依据仍需核实，尚未交开发返工。点击“继续验收”，测试工程师会接着核实；已有草稿与证据已保留。';}
   }
   return {active,recovering,title,description,resumeVerification};
 }

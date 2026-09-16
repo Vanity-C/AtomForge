@@ -14,7 +14,11 @@ from services.browser_tests import TEST_GUIDANCE, validate_tests
 from services.qa_review import (
     BATCH_REVIEW_GUIDANCE, REPAIR_GUIDANCE, ReviewFailures, ReviewProtocolError,
     can_test_independently, execution_evidence, review_scenarios, unique_issues, validate_review,
+    issue_details, execution_issue,
 )
+from services.qa_protocol import complete_review, test_contract
+from services.test_limits import HARD_MAX_TEST_STEPS
+from services.qa_triage import PLATFORM_SCOPE, TRIAGE_GUIDANCE, ReviewTriageError, triage_issues
 
 
 class Option(BaseModel):
@@ -55,9 +59,9 @@ class Document(BaseModel):
 
 class TestDiagnosis(BaseModel):
     model_config = {'extra': 'forbid'}
-    verdict: Literal['test_defect', 'application_defect']
+    verdict: Literal['test_defect', 'application_defect', 'uncertain']
     reason: str = Field(min_length=1, max_length=2000)
-    tests: list[dict] = Field(default_factory=list, max_length=48)
+    tests: list[dict] = Field(default_factory=list, max_length=HARD_MAX_TEST_STEPS)
 
 
 ROLES = {
@@ -71,8 +75,9 @@ ROLES = {
 
 AGENT_NAMES = {'leader':'阿特拉斯（Atlas）','product': '米洛（Milo）', 'design': '露娜（Luna）', 'architect': '奥利（Ollie）', 'engineer': '尼奥（Neo）', 'qa': '皮普（Pip）'}
 ROLES['product']=(ROLES['product'][0],ROLES['product'][1]+'\n区分用户描述的现状/缺陷与目标要求。例如“现在标签只能添加，不能删除，需要管理功能”是在报告缺少删除能力，不能改写为“禁止删除”。结合修复意图补齐缺失行为；只有用户明确说“不允许删除/不要删除功能”时才作为限制。')
-ROLES['qa']=(ROLES['qa'][0],ROLES['qa'][1].replace('必须提供2–8步','建议提供2–16步（最多48步）')+'\n围绕用户本次新增或修复的核心行为安排实际操作和结果断言，不要只验证页面可见；最后一步必须为 visible 或 text 断言，不能以 click/fill 结束就声称验收覆盖。CSS selector 最多300字符。保留必要前置步骤，不要为了缩短测试而跳过核心验证。')
+ROLES['qa']=(ROLES['qa'][0],ROLES['qa'][1].replace('必须提供2–8步','按 testContract 提供完整测试计划，上限不是必须达到的数量')+'\n围绕用户本次新增或修复的核心行为安排实际操作和结果断言，不要只验证页面可见；最后一步必须为 visible 或 text 断言，不能以 click/fill 结束就声称验收覆盖。CSS selector 最多300字符。保留必要前置步骤，不要为了缩短测试而跳过核心验证。')
 ROLES = {key: (label, '你是 AtomForge 团队的一员。\n' + prompt) for key, (label, prompt) in ROLES.items()}
+ROLES['qa']=(ROLES['qa'][0],ROLES['qa'][1].replace('"issues":["必须修复的问题"]','"issues":[{"description":"必须修复的问题","type":"functionality","severity":"high"}]'))
 CHOICE_PROMPT = '\n待确认 questions 必须为对象数组，替代字符串问题格式：[{"question":"一个真正影响方案且尚未确定的问题","options":[{"label":"具体方案A","description":"实际行为与取舍"},{"label":"具体方案B","description":"实际行为与取舍"}],"recommended":0,"reason":"结合用户需求推荐此项的理由"}]。每题2–3个互斥、可实施的选项，recommended是从0开始的推荐选项索引。不要把其他或继续思考放进options，界面统一提供。需求已明确的内容不要再问；没有待决策项则questions为空。方案默认采用推荐项。设计与架构最多各1题，不重复已经确认的细节。'
 for role in ('product', 'design', 'architect'):
     ROLES[role] = (ROLES[role][0], ROLES[role][1] + CHOICE_PROMPT)
@@ -114,6 +119,8 @@ def current_review_context(context):
 ROLES['qa'] = (ROLES['qa'][0], ROLES['qa'][1].replace('visible|click|fill|text', 'visible|click|fill|text|hidden|enabled|disabled|reload|clear_storage')
     .replace('测试只能使用 visible/click/fill/text 四种动作，text 为包含匹配。', '')
     .replace('最后一步必须为 visible 或 text 断言', '最后一步必须为结果断言') + '\n' + TEST_GUIDANCE + '\n' + BATCH_REVIEW_GUIDANCE)
+ROLES['qa'] = (ROLES['qa'][0], ROLES['qa'][1] + '\n' + PLATFORM_SCOPE + '\n'
+    + 'issues 必须说明对应已确认 requirement、实际用户 impact 和返工 reason，并标记 disposition=blocker。证据不足标记 pending，由 QA 核实；非必要美化、重构和主观建议放 advisories 或 limitations，不作为源码拒绝理由。等级未标注的问题不能直接交开发修复。复验重点是上一轮已确认缺陷、改动影响及核心回归，禁止每轮增加无关要求。')
 
 
 async def execute_team(run_id, owner, project_id, payload):
@@ -130,10 +137,12 @@ async def execute_team(run_id, owner, project_id, payload):
 
     draft_files = json.loads(saved.result).get('draft_files', payload['files'])
     code_checkpoint = json.loads(saved.result).get('code_checkpoint', {})
+    review_checkpoint = json.loads(saved.result).get('qa_protocol', {})
     resume_verification = json.loads(saved.result).get('resume_stage') == 'verification' and bool(documents.get('engineer'))
 
     async def persist():
         await studio.change(run_id, result={'team': documents, 'draft_files': draft_files,
+                                           **({'qa_protocol':review_checkpoint} if review_checkpoint else {}),
                                            **({'code_checkpoint':code_checkpoint} if code_checkpoint else {})})
 
     async def save_batch(files, checkpoint):
@@ -144,6 +153,12 @@ async def execute_team(run_id, owner, project_id, payload):
         await persist()
 
     test_corrections = set()
+    iteration_policy = None
+
+    def checked_protocol(checked):
+        if checked.get('failure', {}).get('kind') == 'protocol' or checked.get('error', '').startswith('测试协议错误'):
+            raise ReviewProtocolError('测试脚本需要纠正，应用源码已保留，可继续验收：' + checked.get('error', '测试协议无效'))
+        return checked
 
     async def verify(files, tests, source, scenario=None):
         """Triage an interaction/protocol failure once, without handing code back.
@@ -151,30 +166,36 @@ async def execute_team(run_id, owner, project_id, payload):
         A correction is a fresh real execution, never a passed/skipped assertion.
         Other failures still take the normal application-repair path.
         """
-        checked = await studio.checked_build(run_id, files, tests)
-        candidate = checked.get('failure', {}).get('kind') == 'interaction' or checked.get('error', '').startswith('测试协议错误')
+        checked = await studio.checked_build(run_id, files, tests, maximum=iteration_policy.max_test_steps)
+        candidate = checked.get('failure', {}).get('kind') in {'interaction', 'assertion', 'protocol'} or checked.get('error', '').startswith('测试协议错误')
         correction_key = (source, scenario['name']) if scenario is not None else ('legacy',)
         if checked.get('ok') or not candidate or correction_key in test_corrections:
-            return checked
+            return checked_protocol(checked)
         test_corrections.add(correction_key)
         await role_event('qa', '交互测试未通过，先核对测试前置条件与源码；本次诊断不修改应用代码。', stage='test', kind='activity')
-        raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_test_diagnosis',
-            [{'role': 'system', 'content': '你是测试工程师，诊断交互步骤失败。仅当源码和已确认需求证明应用行为正确、测试前置条件或操作错误时返回 test_defect，并提供保留原验收目标的完整替代测试。真实缺陷、依据不足或业务结果断言错误返回 application_defect，不调整预期掩盖缺陷。不得删除失败场景，合法禁用行为要改成 disabled 断言，保留有效输入的成功路径。禁止返回或修改 files/edits/delete。只返回 JSON {"verdict":"test_defect|application_defect","reason":"引用源码和需求的具体证据","tests":[]}。\n' + TEST_GUIDANCE},
-             {'role': 'user', 'content': json.dumps({'requirements': documents['product'], 'solution': context.get('approvedSolution'), 'currentFiles': files, 'tests': tests, 'failure': checked}, ensure_ascii=False)}],
+        try:
+            raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_test_diagnosis',
+            [{'role': 'system', 'content': '你是测试工程师，诊断交互或断言失败。仅当源码和已确认需求证明应用行为正确、测试前置条件或操作错误时返回 test_defect，并提供保留原验收目标的完整替代测试。真实应用缺陷返回 application_defect，依据不足返回 uncertain，不调整预期掩盖缺陷。不得删除失败场景，合法禁用行为要改成 disabled 断言，保留有效输入的成功路径。禁止返回或修改 files/edits/delete。只返回 JSON {"verdict":"test_defect|application_defect|uncertain","reason":"引用源码和需求的具体证据","tests":[]}。\n' + TEST_GUIDANCE},
+             {'role': 'user', 'content': json.dumps({'requirements': documents['product'], 'solution': context.get('approvedSolution'), 'currentFiles': files, 'tests': tests, 'failure': checked, 'testContract': test_contract(iteration_policy.min_tests if source == 'qa' and scenario is None else 2, iteration_policy.max_test_steps)}, ensure_ascii=False)}],
             temperature=.1)
+        except ValueError:
+            await role_event('qa', '测试诊断格式尚未有效，保留真实失败记录，继续由 QA 汇总核实。', stage='test', kind='activity')
+            return checked_protocol(checked)
         try:
             diagnosis = TestDiagnosis.model_validate(raw)
             if diagnosis.verdict != 'test_defect':
                 await role_event('qa', diagnosis.reason, stage='test', kind='activity')
-                return checked
-            minimum = (await workflow.policy(run_id)).min_tests if source == 'qa' and scenario is None else 2
-            corrected = validate_tests(diagnosis.tests, minimum=minimum)
+                return checked_protocol(checked)
+            minimum = iteration_policy.min_tests if source == 'qa' and scenario is None else 2
+            corrected = validate_tests(diagnosis.tests, minimum=minimum, maximum=iteration_policy.max_test_steps)
             if scenario is not None:
                 total = len(documents['qa']['tests']) - len(tests) + len(corrected)
-                if not (await workflow.policy(run_id)).min_tests <= total <= 48:
-                    return checked
+                if not iteration_policy.min_tests <= total <= iteration_policy.max_test_steps:
+                    return checked_protocol(checked)
+        except ReviewProtocolError:
+            raise
         except (ValueError, ValidationError):
-            return checked
+            return checked_protocol(checked)
         documents[source].setdefault('test_corrections', []).append({'reason': diagnosis.reason, 'before': tests, 'after': corrected, 'failure': checked.get('error')})
         if scenario is None:
             documents[source]['tests'] = corrected
@@ -183,7 +204,7 @@ async def execute_team(run_id, owner, project_id, payload):
             documents[source]['tests'] = [step for item in documents[source]['scenarios'] for step in item['tests']]
         await persist()
         await role_event('qa', '测试脚本已修正，保留验收目标并重新执行；应用源码未改动。', stage='test', kind='activity', output={'summary': diagnosis.reason, 'tests': corrected})
-        return await studio.checked_build(run_id, files, corrected)
+        return checked_protocol(await studio.checked_build(run_id, files, corrected, maximum=iteration_policy.max_test_steps))
 
     async def role_event(role, message, state='running', stage=None, **extra):
         await studio.event(run_id, stage or role, message, role=role, state=state, **extra)
@@ -222,30 +243,49 @@ async def execute_team(run_id, owner, project_id, payload):
     async def turn(role, context, schema):
         from services.agent_chat import discussion_context
         context={**context,'userDiscussions':await discussion_context(owner,project_id)}
-        if role=='qa':context=current_review_context(context)
+        if role=='qa':
+            context=current_review_context(context)
+            context['testContract']=test_contract(iteration_policy.min_tests, iteration_policy.max_test_steps)
+            documents.pop('qa', None)  # An earlier candidate's report is not this review.
+            await persist()
         if role!='leader':await workflow.move(run_id,role,'doing','负责人直接拉取工作包')
         starts={'product':'我先理清目标和验收标准，再直接交给设计伙伴。','design':f"{members['product']['name']}，需求已收到。我来补齐页面、状态和操作体验。",'architect':f"{members['design']['name']}，我来承接设计，明确组件、数据契约和实现步骤。",'qa':f"{members['engineer']['name']}，我来对照需求检查实现，再安排独立测试。"}
         await role_event(role, starts.get(role,'我接着处理这部分，先核对已有的交接内容。'), model=payload['model'],kind='plan')
         try:
-            raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_'+role,
+            pending = review_checkpoint if role == 'qa' and review_checkpoint.get('sourceRevision') == context['sourceRevision'] else {}
+            raw = pending['raw'] if 'raw' in pending else await studio.call_model(owner, project_id, run_id, payload['model'], 'team_'+role,
                 [{'role': 'system', 'content': (('平台实现约束：入口' + studio.ENGINEER.split('入口', 1)[1] + '\n\n' + ROLES[role][1]) if role in {'design','architect'} else ROLES[role][1])+('\n你正在编写或修订需求。request 是用户本轮最新要求，优先于 originalRequest、旧历史和旧交接文档；发生冲突必须采用最新要求。完整保留未受影响的功能，把最新修改写入 goal、tasks 和 acceptance，直接交接实施；仅遇到新的必要阻塞才提问。' if role=='product' else CONFIRMED_SCOPE)},
                  {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}],
                 temperature=.1 if role == 'qa' else payload.get('temperature', .35))
-            try:
-                output = schema(raw)
-            except (ValidationError, ValueError) as validation_error:
-                await role_event(role, '交接格式需要整理，正在自动修正后继续。', kind='activity')
-                raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_'+role,
-                    [{'role':'system','content':ROLES[role][1] + CONFIRMED_SCOPE + '\n修正交接 JSON 的格式和字段，保持原有业务要求，不增加问题；只返回有效 JSON。'},
-                     {'role':'user','content':json.dumps({'context':context,'previousOutput':raw,'validationError':str(validation_error)[:2500]},ensure_ascii=False)}],
-                    temperature=.1)
+            if role == 'qa':
+                async def save_invalid(raw, details, attempt):
+                    review_checkpoint.clear()
+                    review_checkpoint.update({'raw': raw, 'diagnostic': details, 'attempt': attempt,
+                                              'sourceRevision': context['sourceRevision']})
+                    await persist()
+                    await role_event('qa', '验收报告需要纠正：' + details['error'],
+                                     kind='activity', state='recovering', diagnostic=details)
+
+                async def correct_report(repair):
+                    return await studio.call_model(owner, project_id, run_id, payload['model'], 'team_qa',
+                        [{'role': 'system', 'content': ROLES['qa'][1] + CONFIRMED_SCOPE + '\n' + repair['instruction']},
+                         {'role': 'user', 'content': json.dumps({'context': context, **repair}, ensure_ascii=False)}], temperature=.1)
+
+                output = await complete_review(raw, minimum=context['testContract']['min_total_steps'],
+                                               maximum=context['testContract']['max_total_steps'],
+                                               request=correct_report, on_invalid=save_invalid)
+                review_checkpoint.clear()
+            else:
                 try:
                     output = schema(raw)
-                except (ValidationError, ValueError) as error:
-                    if role == 'qa':
-                        raise ReviewProtocolError('独立验收报告格式仍无效，已保留草稿，请重试验收：' + str(error)) from error
-                    raise
+                except (ValidationError, ValueError) as validation_error:
+                    output = await correct_handoff(role, context, raw, validation_error, schema)
         except studio.Replan:
+            raise
+        except ValueError as error:
+            await role_event(role, '本轮未完成，查看任务错误后可重新执行', 'error')
+            if role == 'qa' and not isinstance(error, ReviewProtocolError):
+                raise ReviewProtocolError('验收报告输出无法解析，草稿已保留，可继续验收：' + str(error)) from error
             raise
         except Exception:
             await role_event(role, '本轮未完成，查看任务错误后可重新执行', 'error')
@@ -256,14 +296,23 @@ async def execute_team(run_id, owner, project_id, payload):
         await role_event(role, output.get('summary') or output.get('goal') or '产出已交接', 'running' if role == 'qa' else 'done', output=output)
         return output
 
+    async def correct_handoff(role, context, raw, validation_error, schema):
+        await role_event(role, '交接格式需要整理，正在自动修正后继续。', kind='activity')
+        raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_'+role,
+            [{'role':'system','content':ROLES[role][1] + CONFIRMED_SCOPE + '\n修正交接 JSON 的格式和字段，保持原有业务要求，不增加问题；只返回有效 JSON。'},
+             {'role':'user','content':json.dumps({'context':context,'previousOutput':raw,'validationError':str(validation_error)[:2500]},ensure_ascii=False)}],
+            temperature=.1)
+        return schema(raw)
+
     async def dispatch(role):
         assignment=next(s for s in documents['leader']['stages'] if s['role']==role)
         context['assignment']=assignment
-        context['qualityPolicy']=(await workflow.policy(run_id)).model_dump()
+        context['qualityPolicy']=(iteration_policy or await workflow.policy(run_id)).model_dump()
         # Assignment is shared context; specialist handoffs drive the workflow.
 
     async def repair_order(failure, attempt, issues=None):
         order={'summary':'一次处理本轮汇总问题，保持原验收范围','items':unique_issues(issues or [failure]), 'attempt':attempt}
+        order['issueDetails']=issue_details(order['items'],documents.get('qa',{}).get('verification',{}).get('issueDetails',[]))
         if 'qa' in documents:documents['qa'].pop('verified',None)
         context['repairRequest']=order
         await persist()
@@ -311,6 +360,10 @@ async def execute_team(run_id, owner, project_id, payload):
     # One initial verification plus the configured repair rounds. Read the
     # live policy at failure boundaries so strategy changes remain effective.
     for attempt in range(workflow.MAX_REPAIRS + 1):
+        # One immutable limit for generation, correction and execution of this plan.
+        # Live changes take effect when the next iteration/resume begins.
+        iteration_policy = await workflow.policy(run_id)
+        context['qualityPolicy'] = iteration_policy.model_dump()
         await workflow.move(run_id,'engineer','doing','实现工作包' if not attempt else '依据测试证据返工')
         if not (resume_verification and attempt == 0):
             await role_event('engineer', '接收需求、设计与架构，开始实现' if not attempt else f'接收验收反馈，第 {attempt} 次修复', stage='code' if not attempt else 'repair')
@@ -343,20 +396,34 @@ async def execute_team(run_id, owner, project_id, payload):
             for line in checked.get('logs', []):
                 await role_event('qa', line, stage='test')
             self_check = checked
-            quality = await workflow.policy(run_id)
-            if resume_verification and attempt == 0 and documents.get('qa',{}).get('approved'):
-                review = validate_review(documents['qa'], minimum=quality.min_tests)
+            quality = iteration_policy
+            review = None
+            if resume_verification and attempt == 0 and not review_checkpoint and documents.get('qa',{}).get('approved'):
+                previous_review = documents['qa']
+                source_revision = current_review_context({'currentFiles': files})['sourceRevision']
+                if previous_review.get('verification', {}).get('sourceRevision') == source_revision:
+                    try:
+                        review = validate_review(previous_review, minimum=quality.min_tests, maximum=quality.max_test_steps)
+                    except ValueError:
+                        pass  # Repair a stale/malformed saved report on the QA side.
+            if review is not None:
                 documents['qa'] = review
                 await workflow.move(run_id,'qa','doing','继续已保存的独立验证')
                 await workflow.move(run_id,'qa','review','复用独立审查报告')
             else:
                 review = await turn('qa', {**context, 'currentFiles': files, 'buildLogs': checked.get('logs', []),
-                    'selfTest': execution_evidence(checked)}, lambda raw: validate_review(raw, minimum=quality.min_tests))
+                    'selfTest': execution_evidence(checked)}, lambda raw: validate_review(raw, minimum=quality.min_tests, maximum=quality.max_test_steps))
             issues = [] if self_check.get('ok') else [self_check.get('error') or '构建或开发自测未通过']
+            details = [execution_issue(self_check, issues[0], 'self_test')] if issues else []
             if not review['approved']:
                 issues.extend(review['issues'] or [review['summary']])
+                details.extend(review['issueDetails'])
+            issues.extend(item['description'] for item in review.get('advisories', []))
+            details.extend(review.get('advisories', []))
             report = {'sourceRevision': current_review_context({'currentFiles': files})['sourceRevision'],
-                      'selfTest': execution_evidence(self_check), 'scenarios': [], 'issues': unique_issues(issues), 'complete': False}
+                      'selfTest': execution_evidence(self_check), 'scenarios': [], 'issues': [],
+                      'issueDetails': [], 'pendingIssues': issue_details(issues, details),
+                      'triageComplete': False, 'complete': False}
             review['verification'] = report
             review.pop('verified', None)
             await persist()
@@ -375,15 +442,47 @@ async def execute_team(run_id, owner, project_id, payload):
                     if not checked.get('ok'):
                         message = checked.get('error') or '独立浏览器测试未通过'
                         issues.append(f"[{scenario['name']}] {message}" if len(scenarios) > 1 else message)
+                        details.append(execution_issue(checked, issues[-1], 'browser_test', scenario['name']))
                 else:
                     record['reason'] = '构建或页面挂载阻塞，未执行此场景；不视为通过'
                 report['scenarios'].append(record)
-                report['issues'] = unique_issues(issues)
+                report['pendingIssues'] = issue_details(issues, details)
                 await persist()
             report['complete'] = all(item['status'] != 'blocked' for item in report['scenarios'])
             await persist()
             if issues:
-                raise ReviewFailures(issues)
+                await role_event('qa', '检查记录已汇总，先核实必要性、根因和等级，再决定是否交开发修复。', stage='test')
+
+                async def save_triage(groups):
+                    report['issues'] = [item['description'] for item in groups['blockers']]
+                    report['issueDetails'] = groups['blockers']
+                    report['pendingIssues'] = groups['pending']
+                    report['advisories'] = groups['advisories']
+                    report['triageComplete'] = not groups['pending']
+                    await persist()
+
+                async def classify(body):
+                    return await studio.call_model(owner, project_id, run_id, payload['model'], 'team_qa_triage',
+                        [{'role': 'system', 'content': TRIAGE_GUIDANCE + '\n' + PLATFORM_SCOPE + CONFIRMED_SCOPE},
+                         {'role': 'user', 'content': json.dumps({**body, 'currentFiles': files,
+                             'requirements': documents['product'], 'solution': context.get('approvedSolution'),
+                             'selfTest': execution_evidence(self_check), 'executions': report['scenarios']}, ensure_ascii=False)}],
+                        temperature=.1, event_role='qa')
+
+                groups = await triage_issues(issues, details, request=classify, on_update=save_triage)
+                if groups['pending']:
+                    await workflow.move(run_id,'qa','verifying','问题分诊待完成',blocked='需要核实影响或测试证据；未交开发返工')
+                    raise ReviewTriageError(f"有 {len(groups['pending'])} 项检查记录需要 QA 核实影响或测试依据；未交开发返工，草稿已保留，可继续验收。")
+                if groups['blockers']:
+                    raise ReviewFailures(item['description'] for item in groups['blockers'])
+                # Keep optional observations on the report, outside the repair list.
+                review['advisories'] = groups['advisories']
+                review['issues'] = []
+                review['issueDetails'] = []
+                review['approved'] = True
+            if not self_check.get('ok') or any(item['status'] != 'passed' for item in report['scenarios']):
+                raise ReviewTriageError('仍有未通过的实际测试，需 QA 核实；不会把未执行或失败结果计为通过。')
+            report['triageComplete'] = True
             # A user may strengthen the live gate while the scenarios execute.
             if len(review['tests']) < (await workflow.policy(run_id)).min_tests:
                 raise ReviewProtocolError('独立测试最低要求已调整，请补足测试后重试验收；无需修改应用源码')

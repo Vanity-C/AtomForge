@@ -21,6 +21,7 @@ from services.model_catalogue import validate_model, provider_for
 from services import codex_provider, task_control, model_output
 from services.leadership import Replan
 from services.browser_tests import TEST_GUIDANCE
+from services.test_limits import MAX_TEST_STEPS, runner_request_timeout, validate_max_steps
 
 PATH = re.compile(r'^(?!.*(?:\.\.|\\))[a-zA-Z0-9_][a-zA-Z0-9_./-]*\.(?:jsx?|tsx?|css|json)$')
 ACTIVE = {'queued','running'}
@@ -34,7 +35,7 @@ ENGINEER = '''你是应用工程师，是 AtomForge 的开发伙伴。使用 Rea
 只返回新增或修改的文件，未提及文件会原样保留。删除文件必须在 delete 中明确列出。禁止省略代码。
 修改已有代码优先使用精确局部补丁，避免为小改动输出整个大文件：{"summary":"摘要","files":[],"edits":[{"path":"App.jsx","old":"从 currentFiles 原样复制的唯一代码片段","new":"完整替换片段"}],"delete":[],"tests":[]}。old 必须非空且在该文件中恰好出现一次，包含足够上下文；同一文件可有多个 edits，按顺序应用，最多60项。同一文件不能同时出现在 files 和 edits 中。新增文件仍在 files 中提供完整内容；不要将未修改的 CSS 或组件再次输出，不要为了缩短代码删除原有功能。
 入口必须为项目根目录 App.jsx 或 App.tsx（不能只提供 src/App.jsx），必须 default export。支持 JSX/TSX/CSS/JSON。可 import react、react-dom、react-router-dom、lucide-react、recharts、date-fns、clsx 以及项目内相对文件。不支持其他 npm 包、Tailwind、远程 CDN 或自行编写服务器。
-React 和 hooks 也支持全局使用，但推荐显式 import。所有 CSS 会自动加载。真实交互、中文文案、空状态、响应式布局。为核心控件添加 data-testid 并提供确定性浏览器测试，建议 2–16 步，最多 48 步、总时限 60 秒。步骤在同一个浏览器中按顺序执行，不要省略必要的前置操作；CSS selector 最多 300 字符，fill/text 必须提供字符串 value。测试协议错误应修正 tests，不要因此重写无关的应用代码。涉及今天的功能使用专门的 today/checkin 控件，不要假设周一或第一个日期就是今天；测试在每次新构建的空环境中执行，不能依赖外部网络。
+React 和 hooks 也支持全局使用，但推荐显式 import。所有 CSS 会自动加载。真实交互、中文文案、空状态、响应式布局。为核心控件添加 data-testid 并提供确定性浏览器测试，按 qualityPolicy.max_test_steps 或 testContract.max_total_steps 的上限安排完整计划，不要凑数；总时限按实际步数分配。步骤在同一个浏览器中按顺序执行，不要省略必要的前置操作；CSS selector 最多 300 字符，fill/text 必须提供字符串 value。测试协议错误应修正 tests，不要因此重写无关的应用代码。涉及今天的功能使用专门的 today/checkin 控件，不要假设周一或第一个日期就是今天；测试在每次新构建的空环境中执行，不能依赖外部网络。
 应用云服务：全局 AtomForge.auth.register(email,password)、login(email,password) 返回 {user:{id,email}}；me() 返回 {user} 或抛错；logout()。AtomForge.db.list(collection) 返回 {items:[{id,data}]}；create(collection,data)、update(collection,id,data) 返回 {item:{id,data}}；remove(collection,id)。这些方法均为 async；数据库操作必须先登录。集合必须出现在给定云配置中，private 集合只能读写自己的数据，shared 集合所有登录用户共享读写。不要创建客户端权限判断替代服务端权限。
 只有云服务已启用时才能使用 AtomForge.db/auth；否则使用 localStorage。仅当 AI 开启时才能调用 AtomForge.ai.chat(prompt)，返回 {content}。没有配置的能力要如实提示，不得假装成功。禁止使用工作台的账号或 API 密钥。
 仅当 payments_enabled 为 true 时才能提供支付：AtomForge.payments.checkout() 返回 {url}，宿主会在预览上方展示“继续付款 · Stripe”链接。应用显示付款页面已准备好，使用该链接继续，不要在沙箱中跳转。status() 返回 {items:[{status,session_id}]}。支付状态必须查询后端，不能根据 URL 参数声称支付成功。
@@ -144,10 +145,15 @@ async def ensure_runner_ready():
             raise RunnerUnavailable() from exc
 
 
-async def runner_build(files, tests=None, edit=None):
-    async with build_lock, httpx.AsyncClient(timeout=75,trust_env=False) as client:
+async def runner_build(files, tests=None, edit=None, *, maximum=MAX_TEST_STEPS):
+    maximum = validate_max_steps(maximum)
+    steps = tests if tests is not None else []
+    if not isinstance(steps, list) or len(steps) > maximum:
+        return {'ok': False, 'logs': [], 'error': f'测试协议错误：tests 必须是最多 {maximum} 步的数组'}
+    timeout = httpx.Timeout(runner_request_timeout(len(steps)), connect=10, write=30, pool=10)
+    async with build_lock, httpx.AsyncClient(timeout=timeout,trust_env=False) as client:
         try:
-            r=await client.post(os.getenv('RUNNER_URL','http://127.0.0.1:8001')+'/build',json={'files':files,'tests':tests or [],'edit':edit})
+            r=await client.post(os.getenv('RUNNER_URL','http://127.0.0.1:8001')+'/build',json={'files':files,'tests':steps,'edit':edit,'max_test_steps':maximum})
             if r.status_code==429: raise HTTPException(429,'验证队列繁忙，正在等待空闲')
             r.raise_for_status()
             return r.json()
@@ -162,6 +168,7 @@ def can_resume_verification(result, error):
 
 async def get_run(owner, run_id):
     from services.agent_profiles import legacy_team
+    from services.run_logs import event_count
     async with db_manager.session() as db:
         r=await db.get(StudioRun,run_id)
         if not r or r.owner!=str(owner): raise HTTPException(404,'任务不存在')
@@ -171,7 +178,7 @@ async def get_run(owner, run_id):
         if result.get('pending'):
             from services.checkpoints import normalize
             result['pending'] = normalize(result['pending'])
-        return {'id':r.id,'project_id':r.project_id,'mode':json.loads(r.payload).get('mode','build'),'agents':json.loads(r.payload).get('agents') or legacy_team(),'status':r.status,'stage':r.stage,'events':json.loads(r.events),'result':result,'error':r.error,'created':r.created,'server_time':time.time()}
+        return {'id':r.id,'project_id':r.project_id,'mode':json.loads(r.payload).get('mode','build'),'agents':json.loads(r.payload).get('agents') or legacy_team(),'status':r.status,'stage':r.stage,'events':json.loads(r.events),'events_total':await event_count(db,r),'result':result,'error':r.error,'created':r.created,'server_time':time.time()}
 
 
 async def change(run_id, **values):
@@ -190,11 +197,26 @@ async def event(run_id, stage, text, **metadata):
         r=await db.get(StudioRun,run_id)
         if not r or r.status=='cancelled': raise asyncio.CancelledError()
         entries=json.loads(r.events)
-        entries.append({'stage':stage,'message':str(text)[:6000],'at':datetime.now(timezone.utc).isoformat(),**metadata})
-        db.add(StudioConversation(project_id=r.project_id,owner=r.owner,run_id=r.id,
+        if entries and not entries[-1].get('id'):
+            from services.run_logs import log_filter
+            archived=await db.scalar(select(StudioConversation.id).where(*log_filter(r)).limit(1))
+            if archived is None:
+                # Upgrade a pre-archive task atomically before appending its first new event.
+                for old in entries:
+                    detail={k:v for k,v in old.items() if k not in {'id','stage','message','at'}}
+                    db.add(StudioConversation(project_id=r.project_id,owner=r.owner,run_id=r.id,
+                        sender=old.get('role','engineer'),recipient=old.get('recipient','all'),
+                        kind=old.get('kind','result' if old.get('output') else 'activity'),content=old.get('message',''),
+                        detail=json.dumps({**detail,'event_stage':old.get('stage','history')},ensure_ascii=False),created=old.get('at',r.created)))
+        entry={'stage':stage,'message':str(text)[:6000],'at':datetime.now(timezone.utc).isoformat(),**metadata}
+        record=StudioConversation(project_id=r.project_id,owner=r.owner,run_id=r.id,
             sender=metadata.get('role','engineer'),recipient=metadata.get('recipient','all'),
             kind=metadata.get('kind','result' if metadata.get('output') else 'activity'),content=str(text)[:6000],
-            detail=json.dumps(metadata,ensure_ascii=False)))
+            detail=json.dumps({**metadata,'event_stage':stage},ensure_ascii=False),created=entry['at'])
+        db.add(record)
+        await db.flush()
+        entries.append({**entry,'id':record.id})
+        # Bounded live-state cache only; all archived records are paginated by /events.
         r.events=json.dumps(entries[-160:],ensure_ascii=False);r.stage=stage
         await db.commit()
 
@@ -214,7 +236,7 @@ async def model_call(owner,project_id,run_id,model,stage,messages,temperature=.2
     await check_budget(owner)
     from services.agent_profiles import snapshot, prompt_for, ROLE_IDS
     role=stage.removeprefix('team_').removeprefix('chat_').removesuffix('_batch')
-    if role=='test_diagnosis':role='qa'
+    if role in {'test_diagnosis','qa_triage'}:role='qa'
     if role=='plan':role='engineer'
     if role not in ROLE_IDS:role='engineer'
     messages=[dict(m) for m in messages]
@@ -244,7 +266,7 @@ async def model_call(owner,project_id,run_id,model,stage,messages,temperature=.2
                 return await model_output.complete(client,model,current_messages,
                     temperature=temperature if not format_attempt else .1,progress=progress)
             role=stage.removeprefix('team_').removeprefix('chat_').removesuffix('_batch')
-            if role=='test_diagnosis':role='qa'
+            if role in {'test_diagnosis','qa_triage'}:role='qa'
             if role=='plan':role='engineer'
             if role in {'code','repair'}: role='engineer'
             response=await retry_transient(request,lambda attempt:event(run_id,'recovering',f'模型连接暂时不稳定，正在重试当前步骤（{attempt}/2），无需重新提交需求。',role=role,kind='activity',state='recovering'))
@@ -293,7 +315,7 @@ async def call_model(owner,project_id,run_id,model,stage,messages,temperature=.2
     from services.leadership import apply_feedback
     await apply_feedback(run_id)
     role=stage.removeprefix('team_').removesuffix('_batch')
-    if role=='test_diagnosis':role='qa'
+    if role in {'test_diagnosis','qa_triage'}:role='qa'
     if role in {'code','repair'}: role='engineer'
     if role=='plan':role='engineer'
     kwargs={'agent_team':agent_team} if agent_team is not None else {}
@@ -302,11 +324,14 @@ async def call_model(owner,project_id,run_id,model,stage,messages,temperature=.2
         lambda r:{'summary':r.get('summary',r.get('goal','模型已返回结构化产出')),'files':patch_paths(r)})
 
 
-async def checked_build(run_id, files, tests=None, role='qa'):
+async def checked_build(run_id, files, tests=None, role='qa', *, maximum=MAX_TEST_STEPS):
     from services.leadership import apply_feedback
     await apply_feedback(run_id)
-    return await traced_tool(run_id,role,'runner.build_and_test',{'files':[f['path'] for f in files],'tests':tests or []},
-        lambda:retry_transient(lambda:wait_runner_slot(lambda:runner_build(files,tests),lambda:event(run_id,'recovering','验证资源正在使用中，正在排队等待空闲；代码已保存，空闲后自动继续。',role=role,kind='activity',state='recovering')),lambda attempt:event(run_id,'recovering',f'验证连接暂未完成，正在重新连接（{attempt}/2）。代码已保存，不会重新生成。',role=role,kind='activity',state='recovering')),lambda r:{'ok':r.get('ok'),'logs':r.get('logs',[]),'error':r.get('error',''),**({'failure':r['failure']} if r.get('failure') else {})})
+    validate_max_steps(maximum)
+    # Keep the ordinary default call compatible with other build callers.
+    options = {} if maximum == MAX_TEST_STEPS else {'maximum': maximum}
+    return await traced_tool(run_id,role,'runner.build_and_test',{'files':[f['path'] for f in files],'tests':tests or [],'max_test_steps':maximum},
+        lambda:retry_transient(lambda:wait_runner_slot(lambda:runner_build(files,tests,**options),lambda:event(run_id,'recovering','验证资源正在使用中，正在排队等待空闲；代码已保存，空闲后自动继续。',role=role,kind='activity',state='recovering')),lambda attempt:event(run_id,'recovering',f'验证连接暂未完成，正在重新连接（{attempt}/2）。代码已保存，不会重新生成。',role=role,kind='activity',state='recovering')),lambda r:{'ok':r.get('ok'),'logs':r.get('logs',[]),'error':r.get('error',''),**({'failure':r['failure']} if r.get('failure') else {})})
 
 
 async def start(owner, project_id, instruction, model, mode=None,temperature=.35,interactive=True, retry_of=None):
@@ -357,6 +382,8 @@ async def start(owner, project_id, instruction, model, mode=None,temperature=.35
                         resume_result['draft_files'] = old_result['draft_files']
                     if old_result.get('code_checkpoint'):
                         resume_result['code_checkpoint'] = old_result['code_checkpoint']
+                    if old_result.get('qa_protocol'):
+                        resume_result['qa_protocol'] = old_result['qa_protocol']
                     payload['previousError'] = previous.error
                     # A saved implementation should be checked before asking for
                     # more code, including failures caused by a faulty test suite.
@@ -534,6 +561,8 @@ async def _execute(run_id,owner,project_id,payload):
     except asyncio.CancelledError:
         await change(run_id,status='cancelled',stage='cancelled',error='任务已停止；已保存版本不变')
     except Exception as exc:
+        from services.qa_review import ReviewProtocolError
+        from services.qa_triage import ReviewTriageError
         if isinstance(exc,HTTPException): message=str(exc.detail)
         elif isinstance(exc,APIStatusError): message={401:'模型鉴权失败',402:'模型账户余额不足',429:'模型服务限流'}.get(exc.status_code,'模型服务暂不可用')
         elif isinstance(exc,TimeoutError): message='任务阶段超时，请缩小需求后重试'
@@ -545,6 +574,12 @@ async def _execute(run_id,owner,project_id,payload):
             result['error_code'] = 'runner_unavailable'
             await change(run_id, result=result)
             await event(run_id,'test','验证服务暂不可用。代码和交接已保存，恢复后从验收继续。',role='qa' if payload.get('mode')=='team' else 'engineer',kind='activity',state='error')
+        elif isinstance(exc, ReviewProtocolError):
+            async with db_manager.session() as db:
+                result = json.loads((await db.get(StudioRun,run_id)).result)
+            result.update(error_code='qa_triage_pending' if isinstance(exc, ReviewTriageError) else 'qa_protocol_error', resume_stage='verification')
+            await change(run_id, result=result)
+            await event(run_id,'test','检查记录待 QA 核实，未交开发返工。草稿已保留，可继续验收。' if isinstance(exc, ReviewTriageError) else '验收报告或测试脚本仍需纠正，草稿已保留。点击继续验收，由测试工程师接着处理。',role='qa',kind='activity',state='error')
         await change(run_id,status='error',stage='error',error=message)
 
 
@@ -596,7 +631,7 @@ async def recover():
         archived=(await db.execute(select(StudioRun).where(~StudioRun.id.in_(select(StudioConversation.run_id).where(StudioConversation.run_id!=''))))).scalars().all()
         for r in archived:
             for entry in json.loads(r.events):
-                metadata={k:v for k,v in entry.items() if k not in {'stage','message','at'}}
+                metadata={**{k:v for k,v in entry.items() if k not in {'stage','message','at'}},'event_stage':entry.get('stage','history')}
                 db.add(StudioConversation(project_id=r.project_id,owner=r.owner,run_id=r.id,sender=entry.get('role','engineer'),recipient=entry.get('recipient','all'),kind=entry.get('kind','result' if entry.get('output') else 'activity'),content=entry.get('message',''),detail=json.dumps(metadata,ensure_ascii=False),created=entry.get('at',r.created)))
         await db.commit()
     from services.checkpoints import restore

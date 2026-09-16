@@ -18,6 +18,7 @@ services:
       ENVIRONMENT: prod
       MGX_IGNORE_MODULE_INIT: "false"
       RUNNER_URL: http://runner:8001
+      ATOMFORGE_MAX_TEST_STEPS: ${ATOMFORGE_MAX_TEST_STEPS:-1000}
     depends_on:
       runner:
         condition: service_healthy
@@ -50,6 +51,8 @@ services:
       context: .
       dockerfile: app/runner/Dockerfile
     image: atomforge-runner:local
+    environment:
+      ATOMFORGE_MAX_TEST_STEPS: ${ATOMFORGE_MAX_TEST_STEPS:-1000}
     restart: unless-stopped
     networks: [builds]
     mem_limit: 1536m

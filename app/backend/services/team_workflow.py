@@ -5,7 +5,8 @@ import time
 from copy import deepcopy
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from services.test_limits import MAX_TEST_STEPS, HARD_MAX_TEST_STEPS
 from core.database import db_manager
 from models.studio import StudioRun
 
@@ -35,6 +36,13 @@ class Policy(BaseModel):
     sla_minutes: int = Field(default=15, ge=1, le=1440)
     max_repairs: int = Field(default=MAX_REPAIRS, ge=0, le=MAX_REPAIRS)
     min_tests: int = Field(default=2, ge=2, le=16)
+    max_test_steps: int = Field(default=MAX_TEST_STEPS, ge=2, le=HARD_MAX_TEST_STEPS, strict=True)
+
+    @model_validator(mode='after')
+    def test_range(self):
+        if self.max_test_steps < self.min_tests:
+            raise ValueError('测试步骤上限不能小于独立测试最少步骤')
+        return self
 
 
 class PolicyChange(Policy):
@@ -111,6 +119,8 @@ async def policy(run_id):
 def present(payload, status, error=''):
     if not payload.get('workflow'):return None
     board=deepcopy(payload['workflow']);now=time.time()
+    # Legacy tasks inherit the configured default without rewriting history.
+    board['policy']=Policy.model_validate(board['policy']).model_dump()
     board['columns']=STATES
     for card in board['cards']:
         card['lane']='加急' if board['policy']['priority']=='urgent' else '标准'

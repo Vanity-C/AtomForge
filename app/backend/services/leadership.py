@@ -105,7 +105,7 @@ async def apply_feedback(run_id, *, locked=False):
             payload.setdefault('workflow_archive',[]).append(payload.pop('workflow'))
         # Old confirmations remain context, but must never outrank new instructions.
         payload.setdefault('decisions',[]).append({'checkpoint':'leader','action':'revise','feedback':payload['instruction']})
-        for key in ('team','plan','pending','resume_stage','developer_tests','summary','error_code'):
+        for key in ('team','plan','pending','resume_stage','developer_tests','summary','error_code','qa_protocol'):
             result.pop(key,None)
         run.payload=json.dumps(payload,ensure_ascii=False);run.result=json.dumps(result,ensure_ascii=False)
         run.stage='leader';run.status='running'
