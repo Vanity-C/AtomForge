@@ -4,13 +4,17 @@ import json
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, Field, StrictBool, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from core.database import db_manager
 from models.studio import StudioCloud, StudioRun
 from services import studio, team_workflow as workflow
 from services.leadership import LeadershipPlan, PLAN_PROMPT
 from services.browser_tests import TEST_GUIDANCE, validate_tests
+from services.qa_review import (
+    BATCH_REVIEW_GUIDANCE, REPAIR_GUIDANCE, ReviewFailures, ReviewProtocolError,
+    can_test_independently, execution_evidence, review_scenarios, unique_issues, validate_review,
+)
 
 
 class Option(BaseModel):
@@ -47,14 +51,6 @@ class Document(BaseModel):
     summary: str = Field(min_length=1, max_length=1500)
     items: list[str] = Field(min_length=1, max_length=20)
     questions: list[Question | str] = Field(default_factory=list, max_length=2)
-
-
-class Review(BaseModel):
-    handoff: str = Field(default='')
-    approved: StrictBool
-    summary: str = Field(min_length=1, max_length=1500)
-    issues: list[str] = Field(max_length=10)
-    tests: list[dict] = Field(min_length=2, max_length=48)
 
 
 class TestDiagnosis(BaseModel):
@@ -114,18 +110,10 @@ def current_review_context(context):
     return result
 
 
-def validate_review(raw):
-    review = Review.model_validate(raw).model_dump()
-    if review['approved'] and review['issues']:
-        raise ValueError('测试工程师的通过结论与问题清单冲突')
-    validate_tests(review['tests'])
-    return review
-
-
 # Replace the older four-action contract so roles do not receive conflicting rules.
 ROLES['qa'] = (ROLES['qa'][0], ROLES['qa'][1].replace('visible|click|fill|text', 'visible|click|fill|text|hidden|enabled|disabled|reload|clear_storage')
     .replace('测试只能使用 visible/click/fill/text 四种动作，text 为包含匹配。', '')
-    .replace('最后一步必须为 visible 或 text 断言', '最后一步必须为结果断言') + '\n' + TEST_GUIDANCE)
+    .replace('最后一步必须为 visible 或 text 断言', '最后一步必须为结果断言') + '\n' + TEST_GUIDANCE + '\n' + BATCH_REVIEW_GUIDANCE)
 
 
 async def execute_team(run_id, owner, project_id, payload):
@@ -155,20 +143,20 @@ async def execute_team(run_id, owner, project_id, payload):
         code_checkpoint.update(checkpoint)
         await persist()
 
-    test_corrections = 0
+    test_corrections = set()
 
-    async def verify(files, tests, source):
+    async def verify(files, tests, source, scenario=None):
         """Triage an interaction/protocol failure once, without handing code back.
 
         A correction is a fresh real execution, never a passed/skipped assertion.
         Other failures still take the normal application-repair path.
         """
-        nonlocal test_corrections
         checked = await studio.checked_build(run_id, files, tests)
         candidate = checked.get('failure', {}).get('kind') == 'interaction' or checked.get('error', '').startswith('测试协议错误')
-        if checked.get('ok') or not candidate or test_corrections >= 1:
+        correction_key = (source, scenario['name']) if scenario is not None else ('legacy',)
+        if checked.get('ok') or not candidate or correction_key in test_corrections:
             return checked
-        test_corrections += 1
+        test_corrections.add(correction_key)
         await role_event('qa', '交互测试未通过，先核对测试前置条件与源码；本次诊断不修改应用代码。', stage='test', kind='activity')
         raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_test_diagnosis',
             [{'role': 'system', 'content': '你是测试工程师，诊断交互步骤失败。仅当源码和已确认需求证明应用行为正确、测试前置条件或操作错误时返回 test_defect，并提供保留原验收目标的完整替代测试。真实缺陷、依据不足或业务结果断言错误返回 application_defect，不调整预期掩盖缺陷。不得删除失败场景，合法禁用行为要改成 disabled 断言，保留有效输入的成功路径。禁止返回或修改 files/edits/delete。只返回 JSON {"verdict":"test_defect|application_defect","reason":"引用源码和需求的具体证据","tests":[]}。\n' + TEST_GUIDANCE},
@@ -179,12 +167,20 @@ async def execute_team(run_id, owner, project_id, payload):
             if diagnosis.verdict != 'test_defect':
                 await role_event('qa', diagnosis.reason, stage='test', kind='activity')
                 return checked
-            minimum = (await workflow.policy(run_id)).min_tests if source == 'qa' else 2
+            minimum = (await workflow.policy(run_id)).min_tests if source == 'qa' and scenario is None else 2
             corrected = validate_tests(diagnosis.tests, minimum=minimum)
+            if scenario is not None:
+                total = len(documents['qa']['tests']) - len(tests) + len(corrected)
+                if not (await workflow.policy(run_id)).min_tests <= total <= 48:
+                    return checked
         except (ValueError, ValidationError):
             return checked
         documents[source].setdefault('test_corrections', []).append({'reason': diagnosis.reason, 'before': tests, 'after': corrected, 'failure': checked.get('error')})
-        documents[source]['tests'] = corrected
+        if scenario is None:
+            documents[source]['tests'] = corrected
+        else:
+            scenario['tests'] = corrected
+            documents[source]['tests'] = [step for item in documents[source]['scenarios'] for step in item['tests']]
         await persist()
         await role_event('qa', '测试脚本已修正，保留验收目标并重新执行；应用源码未改动。', stage='test', kind='activity', output={'summary': diagnosis.reason, 'tests': corrected})
         return await studio.checked_build(run_id, files, corrected)
@@ -234,7 +230,7 @@ async def execute_team(run_id, owner, project_id, payload):
             raw = await studio.call_model(owner, project_id, run_id, payload['model'], 'team_'+role,
                 [{'role': 'system', 'content': (('平台实现约束：入口' + studio.ENGINEER.split('入口', 1)[1] + '\n\n' + ROLES[role][1]) if role in {'design','architect'} else ROLES[role][1])+('\n你正在编写或修订需求。request 是用户本轮最新要求，优先于 originalRequest、旧历史和旧交接文档；发生冲突必须采用最新要求。完整保留未受影响的功能，把最新修改写入 goal、tasks 和 acceptance，直接交接实施；仅遇到新的必要阻塞才提问。' if role=='product' else CONFIRMED_SCOPE)},
                  {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}],
-                temperature=payload.get('temperature', .35))
+                temperature=.1 if role == 'qa' else payload.get('temperature', .35))
             try:
                 output = schema(raw)
             except (ValidationError, ValueError) as validation_error:
@@ -243,7 +239,12 @@ async def execute_team(run_id, owner, project_id, payload):
                     [{'role':'system','content':ROLES[role][1] + CONFIRMED_SCOPE + '\n修正交接 JSON 的格式和字段，保持原有业务要求，不增加问题；只返回有效 JSON。'},
                      {'role':'user','content':json.dumps({'context':context,'previousOutput':raw,'validationError':str(validation_error)[:2500]},ensure_ascii=False)}],
                     temperature=.1)
-                output = schema(raw)
+                try:
+                    output = schema(raw)
+                except (ValidationError, ValueError) as error:
+                    if role == 'qa':
+                        raise ReviewProtocolError('独立验收报告格式仍无效，已保留草稿，请重试验收：' + str(error)) from error
+                    raise
         except studio.Replan:
             raise
         except Exception:
@@ -261,12 +262,12 @@ async def execute_team(run_id, owner, project_id, payload):
         context['qualityPolicy']=(await workflow.policy(run_id)).model_dump()
         # Assignment is shared context; specialist handoffs drive the workflow.
 
-    async def repair_order(failure, attempt):
-        order={'summary':'依据独立测试证据修复，不扩大范围','items':[failure], 'attempt':attempt}
+    async def repair_order(failure, attempt, issues=None):
+        order={'summary':'一次处理本轮汇总问题，保持原验收范围','items':unique_issues(issues or [failure]), 'attempt':attempt}
         if 'qa' in documents:documents['qa'].pop('verified',None)
         context['repairRequest']=order
         await persist()
-        await role_event('qa','验收未通过，复现信息直接交给工程师修复。','recovering',stage='repair',kind='handoff',recipient='engineer',diagnostic=failure,output=order)
+        await role_event('qa',f"本轮检查完成，汇总 {len(order['items'])} 项问题，一次性交给工程师修复。",'recovering',stage='repair',kind='handoff',recipient='engineer',diagnostic=failure,output=order)
 
     context = {'request': payload['instruction'], 'history': payload['history'], 'currentFiles': payload['files'], 'cloud': config, 'handoffs': documents,'userDecisions':payload.get('decisions',[])}
     from services.agent_chat import decision_context
@@ -321,7 +322,7 @@ async def execute_team(run_id, owner, project_id, payload):
             else:
                 from services.code_batches import generate_patch
                 patch = await generate_patch(owner, project_id, run_id, payload['model'], 'team_code' if not attempt else 'team_repair',
-                    [{'role': 'system', 'content': studio.ENGINEER+CONFIRMED_SCOPE},
+                    [{'role': 'system', 'content': studio.ENGINEER+CONFIRMED_SCOPE+'\n'+REPAIR_GUIDANCE},
                      {'role': 'user', 'content': json.dumps({**context, 'currentFiles': files, 'previousError': failure}, ensure_ascii=False)}],
                     files, temperature=payload.get('temperature', .35),checkpoint=code_checkpoint,save=save_batch,
                     prefer_batches=bool(not attempt and '输出' in payload.get('previousError','')))
@@ -341,26 +342,51 @@ async def execute_team(run_id, owner, project_id, payload):
             checked = await verify(files, patch.get('tests', []), 'engineer')
             for line in checked.get('logs', []):
                 await role_event('qa', line, stage='test')
-            if not checked['ok']:
-                raise ValueError(checked.get('error', '构建或开发自测未通过'))
+            self_check = checked
+            quality = await workflow.policy(run_id)
             if resume_verification and attempt == 0 and documents.get('qa',{}).get('approved'):
-                review = validate_review(documents['qa'])
+                review = validate_review(documents['qa'], minimum=quality.min_tests)
+                documents['qa'] = review
                 await workflow.move(run_id,'qa','doing','继续已保存的独立验证')
                 await workflow.move(run_id,'qa','review','复用独立审查报告')
             else:
-                review = await turn('qa', {**context, 'currentFiles': files, 'buildLogs': checked.get('logs', [])}, validate_review)
+                review = await turn('qa', {**context, 'currentFiles': files, 'buildLogs': checked.get('logs', []),
+                    'selfTest': execution_evidence(checked)}, lambda raw: validate_review(raw, minimum=quality.min_tests))
+            issues = [] if self_check.get('ok') else [self_check.get('error') or '构建或开发自测未通过']
             if not review['approved']:
-                raise ValueError('独立验收要求修复：' + '; '.join(review['issues'] or [review['summary']]))
-            quality=await workflow.policy(run_id)
-            if len(review['tests'])<quality.min_tests:raise ValueError(f'战略门禁要求至少 {quality.min_tests} 个独立测试步骤，请补足核心操作与结果断言')
-            await workflow.move(run_id,'engineer','verifying','开发自测与独立源码审查通过，执行独立验证')
-            await workflow.move(run_id,'qa','verifying','独立审查通过，执行测试用例')
-            await role_event('qa', '代码审查通过，执行测试工程师编写的独立测试', stage='test')
-            checked = await verify(files, review['tests'], 'qa')
-            for line in checked.get('logs', []):
-                await role_event('qa', line, stage='test')
-            if not checked['ok']:
-                raise ValueError(checked.get('error', '独立浏览器测试未通过'))
+                issues.extend(review['issues'] or [review['summary']])
+            report = {'sourceRevision': current_review_context({'currentFiles': files})['sourceRevision'],
+                      'selfTest': execution_evidence(self_check), 'scenarios': [], 'issues': unique_issues(issues), 'complete': False}
+            review['verification'] = report
+            review.pop('verified', None)
+            await persist()
+            await workflow.move(run_id,'engineer','verifying','等待完整验收报告，尚未通过质量门禁')
+            await workflow.move(run_id,'qa','verifying','汇总源码审查与所有可运行场景')
+            scenarios = review_scenarios(review)
+            for index, scenario in enumerate(scenarios):
+                record = {'name': scenario['name'], 'status': 'blocked'}
+                if can_test_independently(self_check):
+                    await role_event('qa', f"检查场景 {index+1}/{len(scenarios)}：{scenario['name']}；完成后统一汇总。", stage='test')
+                    checked = await verify(files, scenario['tests'], 'qa', scenario if review['scenarios'] else None)
+                    record.update(execution_evidence(checked))
+                    record['status'] = 'passed' if checked.get('ok') else 'failed'
+                    for line in checked.get('logs', []):
+                        await role_event('qa', line, stage='test')
+                    if not checked.get('ok'):
+                        message = checked.get('error') or '独立浏览器测试未通过'
+                        issues.append(f"[{scenario['name']}] {message}" if len(scenarios) > 1 else message)
+                else:
+                    record['reason'] = '构建或页面挂载阻塞，未执行此场景；不视为通过'
+                report['scenarios'].append(record)
+                report['issues'] = unique_issues(issues)
+                await persist()
+            report['complete'] = all(item['status'] != 'blocked' for item in report['scenarios'])
+            await persist()
+            if issues:
+                raise ReviewFailures(issues)
+            # A user may strengthen the live gate while the scenarios execute.
+            if len(review['tests']) < (await workflow.policy(run_id)).min_tests:
+                raise ReviewProtocolError('独立测试最低要求已调整，请补足测试后重试验收；无需修改应用源码')
             documents['qa']['verified'] = True
             await workflow.move(run_id,'qa','acceptance','独立浏览器测试实际执行通过')
             await workflow.move(run_id,'qa','done','独立审查与执行证据已保存')
@@ -369,14 +395,14 @@ async def execute_team(run_id, owner, project_id, payload):
             await role_event('qa', '独立审查与浏览器测试通过，交付验收完成', 'done', output=documents['qa'])
             break
         except (ValueError, ValidationError) as exc:
-            if isinstance(exc,studio.OutputLimitError): raise
+            if isinstance(exc,(studio.OutputLimitError, ReviewProtocolError)): raise
             failure = str(exc)[:5000]
             quality=await workflow.policy(run_id)
             if attempt >= quality.max_repairs:
                 await role_event('qa',f'达到自动修复上限（{quality.max_repairs} 次），升级领导协调范围、资源或外部依赖。','error',stage='repair',kind='handoff',recipient='leader',diagnostic=failure)
                 await role_event(active_role,'这一轮还未通过验收，已保留草稿和交接进度，可从工作看板继续。','error',stage='error',diagnostic=failure)
                 raise ValueError(f'达到修复上限（{quality.max_repairs} 次），仍未通过验收：' + failure) from exc
-            await repair_order(failure,attempt+1)
+            await repair_order(failure,attempt+1, exc.issues if isinstance(exc, ReviewFailures) else None)
             await dispatch('engineer')
     await studio.event(run_id, 'save', '团队验收通过，保存代码和构建产物')
     summary = documents['engineer']['summary']

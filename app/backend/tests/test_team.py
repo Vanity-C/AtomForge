@@ -256,8 +256,12 @@ def test_retry_resumes_draft_and_approved_handoffs(client,monkeypatch):
     next_id=client.post('/api/v1/studio/runs/'+rid+'/retry',headers=owner).json()['id']
     done=wait_run(client,owner,next_id)
     assert done['status']=='done',done
-    assert [stage for stage,_ in calls]==['team_qa']
-    assert calls[0][1]['currentFiles'][0]['path']=='App.jsx'
+    # The failed run now already reviewed the source while collecting its
+    # build blocker. Resume that unchanged candidate without another model turn.
+    assert failed['result']['team']['qa']['approved'] is True
+    assert not calls
+    assert done['result']['team']['qa']['verified'] is True
+    assert done['result']['team']['qa']['verification']['sourceRevision']==failed['result']['team']['qa']['verification']['sourceRevision']
     assert done['result']['team']['engineer']==failed['result']['team']['engineer']
 
 

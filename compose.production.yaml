@@ -2,7 +2,7 @@ name: atomforge-production
 
 services:
   app:
-    image: atomforge:${ATOMFORGE_VERSION:-0.3.8}
+    image: atomforge:${ATOMFORGE_VERSION:-0.3.9}
     build:
       context: .
       dockerfile: Dockerfile
@@ -40,7 +40,7 @@ services:
   runner:
     # Chromium spawns subprocesses; PID 1 must reap them after each verification.
     init: true
-    image: atomforge-runner:${ATOMFORGE_VERSION:-0.3.8}
+    image: atomforge-runner:${ATOMFORGE_VERSION:-0.3.9}
     build:
       context: .
       dockerfile: app/runner/Dockerfile

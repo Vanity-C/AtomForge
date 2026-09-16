@@ -16,7 +16,7 @@ STATES = [
     dict(id='ready', name='就绪', entry='依赖完成，验收标准和输出物明确', exit='负责人拉取，未超过 WIP', output='执行上下文', next=['doing']),
     dict(id='doing', name='进行中', entry='已拉取工作包', exit='真实产出已保存', output='文档或代码草稿', next=['review']),
     dict(id='review', name='评审中', entry='产出可审查', exit='阶段契约有效；代码须经过独立 QA 审查', output='结构检查或独立审查结论', next=['verifying', 'done', 'doing']),
-    dict(id='verifying', name='验证中', entry='审查通过且测试可执行', exit='真实构建和独立交互测试通过', output='执行日志、失败复现信息', next=['acceptance', 'doing']),
+    dict(id='verifying', name='验证中', entry='审查已完成，执行可运行场景并汇总阻塞项', exit='源码审查、真实构建和全部必需场景通过', output='完整检查报告、失败复现与阻塞信息', next=['acceptance', 'doing']),
     dict(id='acceptance', name='待验收', entry='所有必要验证通过', exit='按基线验收并保存版本成功', output='验收证据与版本号', next=['done', 'doing']),
     dict(id='done', name='完成', entry='工作包 DoD 满足，证据已保存', exit='新增需求另建任务，缺陷创建返工记录', output='已交付产物', next=[]),
 ]

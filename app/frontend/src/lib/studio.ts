@@ -12,7 +12,20 @@ export const TEAM_ROLES = [
   {id:'qa',name:'测试工程师',alias:'Pip',nickname:'皮普',task:'检查功能和真实交互，发现问题并验证修复结果',greeting:'你好呀，我是 Pip！每个小细节我都会认真检查。',equipment:'放大镜 · 验收清单'},
 ] as const;
 export const agentLabel = (id:string) => {const role=TEAM_ROLES.find(r=>r.id===id);return role?`${role.alias} · ${role.name}`:id;};
-export interface TeamOutput {summary?:string;goal?:string;tasks?:string[];acceptance?:string[];items?:string[];issues?:string[];approved?:boolean;verified?:boolean;stages?:{role:string;title:string;tasks:string[];delivery:string;gatekeeper:string}[];adjustments?:{attempt:number;summary:string;items:string[]}[];tests?:{action:string;selector:string;value?:string}[]}
+export interface ReviewStep {action:string;selector?:string;value?:string}
+export interface TeamOutput {
+  summary?:string;goal?:string;tasks?:string[];acceptance?:string[];items?:string[];issues?:string[];approved?:boolean;verified?:boolean;
+  stages?:{role:string;title:string;tasks:string[];delivery:string;gatekeeper:string}[];
+  adjustments?:{attempt:number;summary:string;items:string[]}[];
+  tests?:ReviewStep[];
+  scenarios?:{name:string;tests:ReviewStep[]}[];
+  limitations?:string[];
+  verification?:{
+    sourceRevision:string;complete:boolean;issues:string[];
+    selfTest?:{ok?:boolean;error?:string;logs?:string[]};
+    scenarios:{name:string;status:'passed'|'failed'|'blocked';error?:string;reason?:string;logs?:string[]}[];
+  };
+}
 export interface PendingConfirmation {
   id:string;key:string;role:string;title:string;documents:Record<string,TeamOutput>;
   choices:{id:string;question:string;reason:string;recommended:string;options:{id:string;label:string;description:string}[]}[];
